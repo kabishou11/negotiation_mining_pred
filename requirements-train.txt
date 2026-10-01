@@ -1,0 +1,9 @@
+# Server install for QLoRA and greedy inference. The local judge itself only
+# needs requirements.txt (numpy, scipy).
+torch
+transformers>=4.51
+peft>=0.15
+bitsandbytes>=0.45
+accelerate>=1.6
+numpy>=1.24
+scipy>=1.11

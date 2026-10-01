@@ -1,0 +1,44 @@
+{
+  "fit_docs_with_a_record": 2358,
+  "oppose_docs_in_fit": 160,
+  "oppose_repeat": 4,
+  "oppose_repeat_scope": "extract",
+  "records": 13979,
+  "task_counts": {
+    "future": 11141,
+    "extract": 2838
+  },
+  "gold_issues_seen": 11159,
+  "issues_without_alignment": 18,
+  "issue_lines_capped_to_3": 1307,
+  "chars_per_token_assumption": 1.5,
+  "extract_chars": {
+    "p50": 2390,
+    "p95": 4950,
+    "max": 7296
+  },
+  "future_chars": {
+    "p50": 469,
+    "p95": 611,
+    "max": 808
+  },
+  "extract_token_buckets": {
+    "le_2048": 2001,
+    "le_3072": 2620,
+    "le_4096": 2766,
+    "le_6144": 2838,
+    "le_8192": 2838,
+    "gt_8192": 0,
+    "n": 2838
+  },
+  "future_token_buckets": {
+    "le_2048": 11141,
+    "le_3072": 11141,
+    "le_4096": 11141,
+    "le_6144": 11141,
+    "le_8192": 11141,
+    "gt_8192": 0,
+    "n": 11141
+  },
+  "token_estimate_one_epoch": 9271819
+}

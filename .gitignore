@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+runs/
+*.safetensors
+*.bin
+*.pt
+data/sft/train.jsonl
