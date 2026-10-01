@@ -13,18 +13,18 @@
   "issue_lines_capped_to_3": 1307,
   "chars_per_token_assumption": 1.5,
   "extract_chars": {
-    "p50": 2390,
-    "p95": 4950,
-    "max": 7296
+    "p50": 2392,
+    "p95": 4952,
+    "max": 7298
   },
   "future_chars": {
-    "p50": 469,
-    "p95": 611,
-    "max": 808
+    "p50": 471,
+    "p95": 613,
+    "max": 810
   },
   "extract_token_buckets": {
-    "le_2048": 2001,
-    "le_3072": 2620,
+    "le_2048": 2000,
+    "le_3072": 2619,
     "le_4096": 2766,
     "le_6144": 2838,
     "le_8192": 2838,
@@ -40,5 +40,5 @@
     "gt_8192": 0,
     "n": 11141
   },
-  "token_estimate_one_epoch": 9271819
+  "token_estimate_one_epoch": 9290458
 }

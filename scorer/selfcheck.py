@@ -344,6 +344,63 @@ def check_semifinal() -> None:
         _fail("a single speaking party must not be padded to three issues")
 
 
+def check_loss_mask() -> None:
+    from scorer.train import encode_example, resolve_max_length
+
+    if (resolve_max_length(0, 80), resolve_max_length(0, 48), resolve_max_length(0, 32)) != (6144, 4096, 3072):
+        _fail("gpu length table changed")
+    if resolve_max_length(3072, 80) != 3072:
+        _fail("an explicit max-length was overridden")
+
+    class Batch:
+        def __init__(self, ids: list[int]) -> None:
+            self.input_ids = ids
+
+    class Tok:
+        eos_token = "<|im_end|>"
+
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False, enable_thinking=True):
+            text = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages)
+            if add_generation_prompt:
+                text += "<|im_start|>assistant\n"
+                if enable_thinking is False:
+                    text += "<think>\n\n</think>\n\n"
+            return text
+
+        def __call__(self, text, add_special_tokens=False):
+            return Batch([ord(ch) for ch in text])
+
+    class OldTok(Tok):
+        def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=False):
+            text = "".join(f"<|im_start|>{m['role']}\n{m['content']}<|im_end|>\n" for m in messages)
+            if add_generation_prompt:
+                text += "<|im_start|>assistant\n"
+            return text
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "UNIQUE_USER_MARK\n[S01] 甲支持。"},
+        {"role": "assistant", "content": "ISSUE 开放合作 ||| support ||| S01"},
+    ]
+    item = encode_example(Tok(), messages, 4096)
+    if item is None:
+        _fail("aligned example was dropped")
+    supervised = [token for token in item["labels"] if token != -100]
+    text = "".join(chr(token) for token in supervised)
+    if not text.startswith(messages[-1]["content"]) or "UNIQUE_USER_MARK" in text or "<think>" in text:
+        _fail(f"loss mask leaked the prompt: {text[:60]!r}")
+    if item["labels"][0] != -100:
+        _fail("prompt token was trained")
+    if encode_example(Tok(), messages, 8) is not None:
+        _fail("an overlong example was kept")
+    old = encode_example(OldTok(), messages, 4096)
+    if old is None:
+        _fail("legacy template dropped the example")
+    old_text = "".join(chr(token) for token in old["labels"] if token != -100)
+    if not old_text.startswith("ISSUE ") or "<think>" in old_text or "UNIQUE_USER_MARK" in old_text:
+        _fail(f"legacy template trained the wrong span: {old_text[:60]!r}")
+
+
 def check_resume() -> None:
     from scorer.infer import _prepare_resume
 
@@ -360,6 +417,7 @@ def check_resume() -> None:
 
 
 def main() -> int:
+    check_loss_mask()
     check_rouge()
     check_matching()
     check_threshold()

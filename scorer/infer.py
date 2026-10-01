@@ -17,24 +17,12 @@ from pathlib import Path
 
 from scorer.compile import _fallback_future, compile_protocol, expand_semifinal, rule_fallback
 from scorer.datautil import load_split
-from scorer.prompt import extraction_messages, future_messages
+from scorer.prompt import extraction_messages, future_messages, render_prompt
 from scorer.segment import segment_sample
 
 
 def render_chat(tokenizer, messages: list[dict[str, str]]) -> str:
-    try:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=False,
-        )
-    except TypeError:
-        return tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-        )
+    return render_prompt(tokenizer, messages)
 
 
 def _input_device(model):
