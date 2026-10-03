@@ -13,6 +13,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+export PYTHONUNBUFFERED=1
 MODEL="${1:?pass the local Qwen3-32B directory}"
 OUT="${2:-runs/qlora-r16}"
 MAXLEN="${3:-}"

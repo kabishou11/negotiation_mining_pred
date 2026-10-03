@@ -208,12 +208,13 @@ def write_predictions(
     done = _prepare_resume(output, resume)
     failure_log = Path(str(output) + ".failures.jsonl")
     file_mode = "a" if resume and output.is_file() else "w"
+    pending = [sample for sample in samples if sample["sample_id"] not in done]
+    from tqdm import tqdm
+
     written = 0
     with output.open(file_mode, encoding="utf-8", newline="\n") as handle:
-        for sample in samples:
+        for sample in tqdm(pending, desc="infer", dynamic_ncols=True, mininterval=1.0):
             sample_id = sample["sample_id"]
-            if sample_id in done:
-                continue
             result = None
             last_error = ""
             for attempt in (1, 2):

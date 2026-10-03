@@ -10,6 +10,7 @@
 # sample at a time.
 set -eu
 cd "$(dirname "$0")/.."
+export PYTHONUNBUFFERED=1
 MODEL="${1:-}"
 if [ -z "$MODEL" ]; then
   python3 -m scorer.infer --split val --limit 1 --dry-run

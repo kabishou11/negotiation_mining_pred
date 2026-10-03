@@ -211,11 +211,13 @@ def main() -> None:
 
     gib = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
     max_length = resolve_max_length(args.max_length, gib)
+    from tqdm import tqdm
+
     encoded = []
     skipped_by_task: Counter = Counter()
     token_total = 0
     longest = 0
-    for row in rows:
+    for row in tqdm(rows, desc="tokenize", dynamic_ncols=True, mininterval=0.5):
         try:
             item = encode_example(tokenizer, row["messages"], max_length)
         except MaskError as exc:
@@ -338,14 +340,16 @@ def main() -> None:
 
         def on_step_end(self, args, state, control, **kwargs):
             step = state.global_step
-            if step not in (10, 20) and step % 100 != 0:
+            if step not in (1, 10, 20) and step % 100 != 0:
                 return
             elapsed = time.time() - self.started
             per_step = elapsed / max(step, 1)
             left = (state.max_steps - step) * per_step
+            # Step 1 includes allocator warmup, so its hour figure runs long.
+            note = "  (step 1 is slow; trust the bar after step 20)" if step == 1 else ""
             print(
                 f"[eta] step {step}/{state.max_steps}  {per_step:.2f}s/optim_step  "
-                f"remaining {left / 3600:.2f}h",
+                f"remaining {left / 3600:.2f}h{note}",
                 flush=True,
             )
 
@@ -359,6 +363,8 @@ def main() -> None:
         weight_decay=0.01,
         lr_scheduler_type="cosine",
         logging_steps=10,
+        # Default turns the bar off when the process log level is above warning.
+        disable_tqdm=False,
         save_strategy="steps",
         save_steps=200,
         save_total_limit=2,
