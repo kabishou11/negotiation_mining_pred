@@ -340,6 +340,18 @@ def check_semifinal() -> None:
     one = rule_fallback(single, one_seg)
     if one is None or one.issue_list[0]["stance"] != "support":
         _fail("policy-document fallback should be support")
+    press = {
+        "sample_id": "PRESS",
+        "docs": [{"doc_type": "记者会", "publish_date": "2024-01-01", "full_text": "发言人说明现有安排。"}],
+    }
+    news = {
+        "sample_id": "NEWS",
+        "docs": [{"doc_type": "国际新闻报道", "publish_date": "2024-01-01", "full_text": "报道称双方仍在磋商。"}],
+    }
+    if rule_fallback(press, segment_sample(press)).issue_list[0]["stance"] != "support":
+        _fail("press-conference fallback should stay support")
+    if rule_fallback(news, segment_sample(news)).issue_list[0]["stance"] != "neutral":
+        _fail("news fallback should stay neutral")
     if len(expand_semifinal(one, one_seg).issue_list) != 1:
         _fail("a single speaking party must not be padded to three issues")
 
@@ -347,8 +359,14 @@ def check_semifinal() -> None:
 def check_loss_mask() -> None:
     from scorer.train import encode_example, resolve_max_length
 
-    if (resolve_max_length(0, 80), resolve_max_length(0, 48), resolve_max_length(0, 32)) != (6144, 4096, 3072):
-        _fail("gpu length table changed")
+    picked = (
+        resolve_max_length(0, 80),
+        resolve_max_length(0, 45),
+        resolve_max_length(0, 40),
+        resolve_max_length(0, 32),
+    )
+    if picked != (6144, 6144, 4096, 3072):
+        _fail(f"gpu length table changed: {picked}")
     if resolve_max_length(3072, 80) != 3072:
         _fail("an explicit max-length was overridden")
 
@@ -399,6 +417,10 @@ def check_loss_mask() -> None:
     old_text = "".join(chr(token) for token in old["labels"] if token != -100)
     if not old_text.startswith("ISSUE ") or "<think>" in old_text or "UNIQUE_USER_MARK" in old_text:
         _fail(f"legacy template trained the wrong span: {old_text[:60]!r}")
+    from scorer.infer import _strip_think
+
+    if _strip_think("<think>\n推理\n</think>\nISSUE 甲 ||| support ||| S01") != "ISSUE 甲 ||| support ||| S01":
+        _fail("a think span was left in the decoded answer")
 
 
 def check_resume() -> None:

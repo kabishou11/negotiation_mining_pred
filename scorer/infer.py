@@ -32,21 +32,32 @@ def _input_device(model):
         return next(model.parameters()).device
 
 
+def _strip_think(text: str) -> str:
+    if "</think>" in text:
+        text = text.split("</think>", 1)[-1]
+    return text.strip()
+
+
 def generate_text(model, tokenizer, messages: list[dict[str, str]], max_new_tokens: int) -> str:
     import torch
+    from transformers import GenerationConfig
 
     prompt = render_chat(tokenizer, messages)
     inputs = tokenizer(prompt, return_tensors="pt")
     device = _input_device(model)
     inputs = {k: v.to(device) for k, v in inputs.items()}
+    # A fresh config, not the checkpoint's. Qwen3 ships do_sample=True and
+    # some transformers builds put that back when temperature is also set.
+    greedy = GenerationConfig(
+        do_sample=False,
+        max_new_tokens=max_new_tokens,
+        pad_token_id=tokenizer.pad_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+    )
     with torch.no_grad():
-        output = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-        )
+        output = model.generate(**inputs, generation_config=greedy)
     new_tokens = output[0, inputs["input_ids"].shape[1] :]
-    return tokenizer.decode(new_tokens, skip_special_tokens=True)
+    return _strip_think(tokenizer.decode(new_tokens, skip_special_tokens=True))
 
 
 def load_model(model_path: str, adapter_path: str = "", device_map: str = "single"):

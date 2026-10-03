@@ -1,35 +1,36 @@
 {
   "fit_docs_with_a_record": 2358,
   "oppose_docs_in_fit": 160,
-  "oppose_repeat": 4,
+  "extract_repeat": 2,
+  "oppose_extract_repeat": 4,
   "oppose_repeat_scope": "extract",
-  "records": 13979,
+  "records": 16177,
   "task_counts": {
-    "future": 11141,
-    "extract": 2838
+    "extract": 5036,
+    "future": 11141
   },
   "gold_issues_seen": 11159,
   "issues_without_alignment": 18,
   "issue_lines_capped_to_3": 1307,
   "chars_per_token_assumption": 1.5,
   "extract_chars": {
-    "p50": 2392,
-    "p95": 4952,
-    "max": 7298
+    "p50": 2450,
+    "p95": 5010,
+    "max": 7356
   },
   "future_chars": {
-    "p50": 471,
-    "p95": 613,
-    "max": 810
+    "p50": 480,
+    "p95": 622,
+    "max": 819
   },
   "extract_token_buckets": {
-    "le_2048": 2000,
-    "le_3072": 2619,
-    "le_4096": 2766,
-    "le_6144": 2838,
-    "le_8192": 2838,
+    "le_2048": 3552,
+    "le_3072": 4632,
+    "le_4096": 4908,
+    "le_6144": 5036,
+    "le_8192": 5036,
     "gt_8192": 0,
-    "n": 2838
+    "n": 5036
   },
   "future_token_buckets": {
     "le_2048": 11141,
@@ -40,5 +41,5 @@
     "gt_8192": 0,
     "n": 11141
   },
-  "token_estimate_one_epoch": 9290458
+  "token_estimate_one_epoch": 13568402
 }

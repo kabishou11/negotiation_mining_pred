@@ -1,8 +1,10 @@
 """Build the supervised-fine-tuning set from the fit split.
 
-Dev40 is excluded. A document that contains any `oppose` issue repeats its
-extraction record four times. Future records are written once: repeating
-them would overfit the few oppose documents' future wording. Extraction
+Dev40 is excluded. Extraction is most of the contest score, and those
+rows are the long ones, so every document's extraction record is repeated
+twice. A document that contains `oppose` is repeated four times. Future
+records stay at one copy. Further repetition would replay the same long
+documents and buy little beyond this. Extraction
 targets are ISSUE lines whose evidence ids are capped at 3, matching
 inference. Future targets are one FUTURE line conditioned on the same
 aligned sentences the extractor would hand over, not on the raw gold
@@ -32,7 +34,8 @@ TRAIN_PATH = OUT_DIR / "train.jsonl"
 STATS_PATH = OUT_DIR / "stats.json"
 CHARS_PER_TOKEN = 1.5
 MAX_EVIDENCE = 3
-OPPOSE_REPEAT = 4
+EXTRACT_REPEAT = 2
+OPPOSE_BOOST = 2
 
 
 def _fit_ids(train: list[dict]) -> set[str]:
@@ -79,7 +82,7 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
         has_oppose = any(issue.get("stance") == "oppose" for issue in sample.get("issue_list") or [])
         if has_oppose:
             oppose_docs += 1
-        repeat = OPPOSE_REPEAT if has_oppose else 1
+        repeat = EXTRACT_REPEAT * (OPPOSE_BOOST if has_oppose else 1)
         extract_record: dict | None = None
         if issue_lines:
             messages = extraction_messages(sample, segmented)
@@ -145,7 +148,8 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
     stats = {
         "fit_docs_with_a_record": len({row["sample_id"] for row in records}),
         "oppose_docs_in_fit": oppose_docs,
-        "oppose_repeat": OPPOSE_REPEAT,
+        "extract_repeat": EXTRACT_REPEAT,
+        "oppose_extract_repeat": EXTRACT_REPEAT * OPPOSE_BOOST,
         "oppose_repeat_scope": "extract",
         "records": len(records),
         "task_counts": dict(task_counts),

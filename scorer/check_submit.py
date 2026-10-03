@@ -103,3 +103,35 @@ def check_bytes(payload: bytes, expected_ids: list[str] | None = None, docs_by_i
         if exp - got:
             errors.append(f"missing sample_id: {sorted(exp - got)[:5]}")
     return errors
+
+
+def main() -> None:
+    import argparse
+    from pathlib import Path
+
+    from scorer.datautil import load_split
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path")
+    parser.add_argument("--split", choices=["train", "val", "test"], default="")
+    args = parser.parse_args()
+    payload = Path(args.path).read_bytes()
+    expected = None
+    docs = None
+    if args.split:
+        samples = load_split(args.split)
+        expected = [sample["sample_id"] for sample in samples]
+        docs = {
+            sample["sample_id"]: [doc.get("full_text") or "" for doc in sample.get("docs") or []]
+            for sample in samples
+        }
+    errors = check_bytes(payload, expected, docs)
+    if errors:
+        print("\n".join(errors[:50]))
+        print(f"{len(errors)} errors")
+        raise SystemExit(1)
+    print("check_submit ok")
+
+
+if __name__ == "__main__":
+    main()

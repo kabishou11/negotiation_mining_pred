@@ -3,10 +3,11 @@
 `--max-length 0` (the default) picks the context from the GPU that is
 actually visible:
 
-- 70GiB and above: 6144. On the official Qwen3-32B tokenizer every current
-  extract example fits (measured maximum 4977 tokens) and every future
-  example is under 600. 8192 trains no additional row.
-- 40GiB up to 70GiB: 4096.
+- 43GiB and above, including a 48GB card (it reports about 45GiB): 6144.
+  On the official Qwen3-32B tokenizer every current extract example fits
+  (measured maximum 5005 tokens) and every future example is under 600.
+  8192 trains no additional row.
+- 40GiB up to 43GiB: 4096.
 - below 40GiB, including a V100-32G: 3072.
 
 Rows longer than the chosen length are skipped, not truncated, because
@@ -26,11 +27,14 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import time
 from collections import Counter
 from pathlib import Path
 
-from scorer.build_sft import TRAIN_PATH, write_sft
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+from scorer.build_sft import EXTRACT_REPEAT, OPPOSE_BOOST, TRAIN_PATH, write_sft
 from scorer.prompt import render_prompt
 
 
@@ -38,11 +42,26 @@ class MaskError(Exception):
     """The supervised span is not the assistant answer."""
 
 
+LORA_TARGETS = [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+]
+
+
 def resolve_max_length(requested: int, gib: float) -> int:
-    """`requested == 0` selects a length the visible GPU can hold."""
+    """`requested == 0` selects a length the visible GPU can hold.
+
+    A marketed 48GB card shows up near 45GiB. 6144 is safe there because the
+    longest training row is 5005 tokens, so the peak sequence is under the cap.
+    """
     if requested:
         return requested
-    if gib >= 70:
+    if gib >= 43:
         return 6144
     if gib >= 40:
         return 4096
@@ -221,10 +240,11 @@ def main() -> None:
         f"longest={longest} tokens={token_total}",
         flush=True,
     )
-    if gib >= 70 and skipped and not args.max_length:
+    if max_length >= 6144 and skipped and not args.max_length:
         raise SystemExit(
             f"{skipped} examples exceed {max_length} on a {gib:.0f}GiB GPU. "
-            "Refusing to start. Rerun with --max-length 8192."
+            "The measured Qwen3 tokenizer fits every row in 6144 "
+            "(data/sft/qwen3_lengths.json). Refusing to load the weights."
         )
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -243,6 +263,12 @@ def main() -> None:
                 "skipped_by_task": dict(skipped_by_task),
                 "longest_tokens": longest,
                 "resume_from": args.resume_from,
+                "lora_targets": LORA_TARGETS,
+                "extract_repeat": EXTRACT_REPEAT,
+                "oppose_extract_repeat": EXTRACT_REPEAT * OPPOSE_BOOST,
+                "warmup_ratio": 0.1,
+                "weight_decay": 0.01,
+                "neftune_noise_alpha": 5.0,
             },
             ensure_ascii=False,
             indent=2,
@@ -265,12 +291,30 @@ def main() -> None:
         "device_map": {"": 0},
         "trust_remote_code": True,
     }
-    try:
-        model = stack["AutoModelForCausalLM"].from_pretrained(
-            args.model, attn_implementation="sdpa", **load_kwargs
-        )
-    except (TypeError, ValueError):
-        model = stack["AutoModelForCausalLM"].from_pretrained(args.model, **load_kwargs)
+    model = None
+    load_error = None
+    loaded_attn = None
+    for attn in ("flash_attention_2", "sdpa", None):
+        kwargs = dict(load_kwargs)
+        if attn:
+            kwargs["attn_implementation"] = attn
+        try:
+            model = stack["AutoModelForCausalLM"].from_pretrained(args.model, **kwargs)
+            loaded_attn = attn
+            print(f"[lock] attention={attn or 'default'}", flush=True)
+            break
+        except (TypeError, ValueError, ImportError, OSError) as exc:
+            load_error = exc
+            model = None
+    if model is None:
+        raise SystemExit(f"failed to load Qwen3-32B: {load_error}")
+    # Math SDPA stores the full score matrix. On a 5000-token row that is
+    # several GiB and is the realistic way a 48GB card runs out of memory.
+    if use_bf16 and loaded_attn != "flash_attention_2":
+        torch.backends.cuda.enable_flash_sdp(True)
+        torch.backends.cuda.enable_mem_efficient_sdp(True)
+        torch.backends.cuda.enable_math_sdp(False)
+        print("[lock] sdp math kernel off", flush=True)
     model = stack["prepare"](model)
     model = stack["get_peft_model"](
         model,
@@ -280,7 +324,7 @@ def main() -> None:
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM",
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+            target_modules=LORA_TARGETS,
         ),
     )
     model.config.use_cache = False
@@ -311,10 +355,12 @@ def main() -> None:
         learning_rate=args.lr,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
-        warmup_ratio=0.05,
+        warmup_ratio=0.1,
+        weight_decay=0.01,
         lr_scheduler_type="cosine",
         logging_steps=10,
-        save_strategy="epoch",
+        save_strategy="steps",
+        save_steps=200,
         save_total_limit=2,
         bf16=use_bf16,
         fp16=not use_bf16,
@@ -326,8 +372,11 @@ def main() -> None:
         remove_unused_columns=False,
         dataloader_num_workers=0,
     )
-    if "gradient_checkpointing_kwargs" in inspect.signature(stack["TrainingArguments"]).parameters:
+    signature = inspect.signature(stack["TrainingArguments"]).parameters
+    if "gradient_checkpointing_kwargs" in signature:
         training_kwargs["gradient_checkpointing_kwargs"] = {"use_reentrant": False}
+    if "neftune_noise_alpha" in signature:
+        training_kwargs["neftune_noise_alpha"] = 5.0
     training = stack["TrainingArguments"](**training_kwargs)
     trainer = stack["Trainer"](
         model=model,

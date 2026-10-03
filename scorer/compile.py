@@ -50,7 +50,7 @@ def _fallback_future(issue: dict) -> str:
     return f"后续将延续「{snippet}」所体现的现有安排。"
 
 
-_SUPPORT_DOC_TYPES = {"联合声明", "政策文件"}
+_SUPPORT_DOC_TYPES = {"联合声明", "政策文件", "记者会"}
 
 
 def _ordered_docs(sample: dict) -> list[dict]:
@@ -63,9 +63,9 @@ def rule_fallback(sample: dict, segmented: Segmented) -> Compiled | None:
     """One submittable issue when extraction emits no ISSUE line.
 
     Evidence is the first sentence, an exact source substring. Stance follows
-    the majority prior of that document type: support for joint statements and
-    policy texts, neutral otherwise. Returns None when there is no sentence
-    to cite.
+    the majority prior: support for joint statements, policy texts, and press
+    conferences; neutral otherwise. The fallback never emits oppose. Returns
+    None when there is no sentence to cite.
     """
     if not segmented.sentences:
         return None
