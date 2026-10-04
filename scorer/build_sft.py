@@ -95,14 +95,19 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
                 "chars": len(text),
             }
             chars["extract"].append(len(text))
-        by_name_ids: dict[str, list[str]] = {}
+        # A queue per name, not one list per name: the semifinal main issue
+        # legitimately repeats one name three times, and a single entry would
+        # attach every copy's future to the last copy's sentences. Protocol
+        # lines are emitted in issue order, so popping the front stays aligned.
+        by_name_queues: dict[str, list[list[str]]] = {}
         for line in issue_lines:
             name = line.split(" ||| ", 2)[0][len("ISSUE ") :]
-            by_name_ids[name] = line.split(" ||| ")[-1].split(",")
+            by_name_queues.setdefault(name, []).append(line.split(" ||| ")[-1].split(","))
         futures = list(sample.get("future_argument") or [])
         for index, issue in enumerate(sample.get("issue_list") or []):
             gold_issues += 1
-            ids = [sid for sid in by_name_ids.get(issue["issue_name"], []) if sid in segmented.by_id]
+            queue = by_name_queues.get(issue["issue_name"]) or []
+            ids = [sid for sid in (queue.pop(0) if queue else []) if sid in segmented.by_id]
             if not ids:
                 dropped_issues += 1
                 continue

@@ -43,7 +43,10 @@ def generate_text(model, tokenizer, messages: list[dict[str, str]], max_new_toke
     from transformers import GenerationConfig
 
     prompt = render_chat(tokenizer, messages)
-    inputs = tokenizer(prompt, return_tensors="pt")
+    # add_special_tokens=False matches the training-side encode in
+    # scorer.train._ids. Qwen3 adds nothing either way, but a tokenizer that
+    # prepends a BOS here would silently break train/infer prefix equality.
+    inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
     device = _input_device(model)
     inputs = {k: v.to(device) for k, v in inputs.items()}
     # A fresh config, not the checkpoint's. Qwen3 ships do_sample=True and
