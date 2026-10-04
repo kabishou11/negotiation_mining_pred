@@ -89,37 +89,64 @@ class BgeEncoder:
         return hidden.cpu().tolist()
 
 
+def _issue_text(issue: dict) -> str:
+    name = str(issue.get("issue_name") or "")
+    chain = "\n".join(issue.get("argument_chain") or [])
+    if name:
+        return name + "\n" + chain
+    return chain
+
+
+_SCORER_CACHE: dict = {}
+
+
+def get_bert_scorer(model_type: str = "bert-base-chinese", num_layers: int | None = None):
+    """One BERTScorer per model, shared by every caller and both call forms.
+
+    `bert_score.score()` builds a fresh model on every call, which makes a
+    few hundred matched pairs take hours. The cache loads it once.
+    """
+    key = (model_type, num_layers)
+    if key not in _SCORER_CACHE:
+        from bert_score import BERTScorer
+
+        kwargs = {"model_type": model_type, "lang": "zh", "rescale_with_baseline": False}
+        if num_layers is not None:
+            kwargs["num_layers"] = num_layers
+        _SCORER_CACHE[key] = BERTScorer(**kwargs)
+    return _SCORER_CACHE[key]
+
+
 class BertScore:
     """Call form expected by `score_sample`: `alpha_fn(pred_issue, gold_issue)`."""
 
     def __init__(self, model_type: str = "bert-base-chinese", num_layers: int | None = None) -> None:
         self.model_type = model_type
         self.num_layers = num_layers
-        self._score = None
-
-    def _fn(self):
-        if self._score is None:
-            from bert_score import score as bert_score
-
-            self._score = bert_score
-        return self._score
 
     def __call__(self, pred_issue: dict, gold_issue: dict) -> float:
-        def as_text(issue: dict) -> str:
-            name = str(issue.get("issue_name") or "")
-            chain = "\n".join(issue.get("argument_chain") or [])
-            if name:
-                return name + "\n" + chain
-            return chain
+        _p, _r, f1 = get_bert_scorer(self.model_type, self.num_layers).score(
+            [_issue_text(pred_issue)],
+            [_issue_text(gold_issue)],
+        )
+        return float(f1[0])
 
-        score = self._fn()
-        kwargs = {
-            "model_type": self.model_type,
-            "lang": "zh",
-            "rescale_with_baseline": False,
-            "verbose": False,
-        }
-        if self.num_layers is not None:
-            kwargs["num_layers"] = self.num_layers
-        _p, _r, f1 = score([as_text(pred_issue)], [as_text(gold_issue)], **kwargs)
+
+class BertScoreText:
+    """Call form expected by `future_sim_fn`: two plain strings.
+
+    Identical strings short-circuit to 1.0: BERTScore of a string against
+    itself is exactly 1, and the shortcut skips a forward pass.
+    """
+
+    def __init__(self, model_type: str = "bert-base-chinese", num_layers: int | None = None) -> None:
+        self.model_type = model_type
+        self.num_layers = num_layers
+
+    def __call__(self, pred: str, gold: str) -> float:
+        if pred == gold:
+            return 1.0
+        _p, _r, f1 = get_bert_scorer(self.model_type, self.num_layers).score(
+            [str(pred)], [str(gold)]
+        )
         return float(f1[0])
