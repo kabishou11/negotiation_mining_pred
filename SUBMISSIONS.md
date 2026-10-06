@@ -25,6 +25,11 @@
 
 ## 实验决策树（拿到 report.json 后照此走）
 
+**第 0 步（每次上服务器先跑，约 10 分钟）**：`./repro/preflight.sh
+/path/to/Qwen3-32B [adapter]` —— 3 个 val 样本端到端，先暴露
+bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问题，
+别让整晚白烧。
+
 `repro/val.sh` 产出 `*_report.json`（逐样本分数 + 失分归因）。归因三类的
 含义：`low_sim`=证据句对了但相似度没过 0.7（形态问题）；`stance_blocked`=
 相似度过线但立场标错（一票否决）；`gold_missed`/`pred_extra`=议题数量
@@ -38,18 +43,60 @@
    A/B。注意它会多花每样本 5 次短生成。
 3. **gold_missed 占多 → 议题补齐**：`--min-issues 4` 先试；`5` 有精度
    反噬风险（金标 4 议题样本占 ~22%，填错一个 F1 反降），必须单独 A/B。
-4. 每项只在 val 上验证为正收益后才合并进下一次 test 提交；每天 3 个
+4. **口径确认（一次性）**：`evaluate --matching cardinality` 跑一次，
+   与默认 weight 分差 ≈0 即永久放下"一对一最优匹配"的口径疑虑；
+   newline vs mean 两种证据模式本地一直同时打印，若两者分差明显且
+   线上分对不上，用一次提交槽做区分实验。
+5. **self-consistency（规则明确允许"同一基座不同推理结果融合"后再做）**：
+   采样 T=0.7 ×5 投票议题/立场/句 ID，只在上面三招收益都吃干后再上。
+6. 每项只在 val 上验证为正收益后才合并进下一次 test 提交；每天 3 个
    额度按"A 队主线实验 ×2 + 对照 ×1"分配，结果写回上表。
 
-## 重训窗口（L2，B 队首提交之后）
+## 重训窗口（L2，有门槛，B 队首提交之后）
 
-`build_sft` 已改 EXTRACT_REPEAT=4（token 份额 ~70%→~80%），train.py
-epochs 默认 3、checkpoint 全保留。步数 ≈ 21853/16×3 ≈ 4098，约为首训
-（2024 步）的 2 倍墙钟，租卡前先排期。训完逐 checkpoint 跑 dev40：
+**启动门槛**：val 归因显示抽取侧失分占主导，且 postprocess/推理侧开关
+全部验证完仍不够 0.74 —— 否则重训是拿 2 倍墙钟去赌一个不确定的增益。
+
+- `build_sft` 已改 EXTRACT_REPEAT=4（token 份额 ~70%→~80%），train.py
+  epochs 默认 3、checkpoint 全保留。
+- **必须用新输出目录 `runs/qlora-r16-v2`**：旧目录里的 checkpoint 会让
+  train.sh 自动续跑，而数据集已从 16,177 行变为 ~21,200 行，调度器与
+  优化器状态错位（train.py 现有守卫会直接拒绝，看到报错就换目录）。
+- 步数 ≈ 21,213/16×3 ≈ 3,978（首训 2 倍墙钟）；save_steps=200 全保留
+  ≈ 20 个 checkpoint，**预留 ~20GB 磁盘**。
+- 训完逐 checkpoint 跑 dev40 选优：
 
     python3 -m scorer.infer --split train --ids-file data/dev40_ids.txt \
-        --model MODEL --adapter runs/qlora-r16/checkpoint-K --output result_dev40_K.jsonl
+        --model MODEL --adapter runs/qlora-r16-v2/checkpoint-K --output result_dev40_K.jsonl
     python3 -m scorer.evaluate result_dev40_K.jsonl --split train --ids-file data/dev40_ids.txt
 
-选 dev40 最高分的 checkpoint，叠加决策树里已验证的开关做最终提交。
+- 选 dev40 最高分的 checkpoint，叠加决策树里已验证的开关做最终提交。
+
+## 复现材料清单（官方 §6/§7 硬性要求，10/12-13 前归集完毕）
+
+复现审查会拿主办方自己的 Qwen3-32B 断网重跑我们的标准命令，核对输出
+一致性；缺一项即取消资格。逐条对照：
+
+- [ ] **技术文档**：总体方案、数据处理流程、训练/微调方法、推理流程、
+      **后处理规则（postprocess 裁剪/重排、立场复核、补抽必须披露）**。
+- [ ] **基座信息**：Qwen3-32B 官方来源 + **版本/commit hash** + 模型配置
+      校验值 + **Tokenizer 校验值**（服务器上 `git log` 权重目录 / 校验
+      config.json 与 tokenizer 的 hash，落盘 `repro/base_model.txt`）。
+- [ ] **权重**：adapter + `adapter_config.json`（自动可加载）。
+- [ ] **运行环境**：`pip freeze > repro/environment.txt`（服务器上跑），
+      操作系统/CUDA/驱动、硬件、**随机种子（A: seed 0 贪心；B: seed 42
+      + 温度 0.2 采样，逐样本播种）**、解码参数、**显存/内存/磁盘占用与
+      运行时长预估**、非确定性说明（B 队采样顺序依赖断点，需注明）。
+- [ ] **辅助模型披露**：bge-small-zh-v1.5（匹配+重排）、bert-base-chinese
+      （评分复刻）的用途与版本；两模型缓存路径写进 run.sh 注释。
+- [ ] **复现指引**：目录结构 + 一键命令（repro/*.sh 已备）+ 输入输出
+      路径 + 校验方式（check_submit）。
+- [ ] **外部资源**：无外部数据（仅官方训练集）；B 队零训练（无伪标签）。
+
+## 提交前检查清单（每次）
+
+1. `python3 -m scorer.check_submit result_xx.jsonl --split test` 通过。
+2. 台账补行（日期/文件/checkpoint/开关/线上分/本地分）。
+3. 产生该文件的 commit 已 push（服务器复现要与本地代码一致）。
+
 

@@ -79,7 +79,7 @@ def check_normalize(doc: dict, cfg: dict) -> None:
         ],
         "future_argument": [],
     }
-    norm = e2e.normalize(obj, full, cfg)
+    norm = e2e.normalize(obj, doc["docs"], cfg)
     chain = norm["issue_list"][0]["argument_chain"]
     if chain[0] != evidence or not all(c in full for c in chain):
         _fail(f"evidence forcing failed: {chain}")

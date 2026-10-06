@@ -118,6 +118,13 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0, help="0 means every selected sample")
     parser.add_argument("--encoder", choices=["auto", "bge", "hash", "orthogonal"], default="auto")
     parser.add_argument("--semantic", choices=["auto", "bertscore", "stub"], default="auto")
+    parser.add_argument(
+        "--matching",
+        choices=["weight", "cardinality"],
+        default="weight",
+        help="bipartite objective: weight = max weight sum (official reading); "
+        "cardinality = max edge count, run once on val to confirm the delta is ~0",
+    )
     parser.add_argument("--device", default="", help="cuda/cpu for the encoders (default: auto)")
     parser.add_argument(
         "--out",
@@ -167,6 +174,7 @@ def main() -> None:
         "ids_file": args.ids_file,
         "encoder": enc_label,
         "semantic": sem_label,
+        "matching": args.matching,
         "modes": {},
         "samples": [],
     }
@@ -181,7 +189,15 @@ def main() -> None:
 
     for arg_mode in ("newline", "mean"):
         scored_rows = [
-            score_sample(pred, gold, encoder, alpha_fn, future_sim_fn=future_fn, arg_mode=arg_mode)
+            score_sample(
+                pred,
+                gold,
+                encoder,
+                alpha_fn,
+                future_sim_fn=future_fn,
+                arg_mode=arg_mode,
+                matching=args.matching,
+            )
             for pred, gold in pairs
         ]
         n = len(scored_rows)
@@ -189,7 +205,7 @@ def main() -> None:
         for field in ("score", "s_ext", "f1_ext", "alpha", "s_pred", "f1_pred", "s_semantic"):
             agg[field] = sum(getattr(row, field) for row in scored_rows) / n
         print(
-            f"[{arg_mode}] score={agg['score']:.4f} s_ext={agg['s_ext']:.4f} "
+            f"[{arg_mode}|{args.matching}] score={agg['score']:.4f} s_ext={agg['s_ext']:.4f} "
             f"f1_ext={agg['f1_ext']:.4f} alpha={agg['alpha']:.4f} "
             f"s_pred={agg['s_pred']:.4f} f1_pred={agg['f1_pred']:.4f} "
             f"s_semantic={agg['s_semantic']:.4f}"

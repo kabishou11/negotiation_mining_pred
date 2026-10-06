@@ -90,11 +90,20 @@ class BgeEncoder:
 
 
 def _issue_text(issue: dict) -> str:
+    """BERTScore text of a triple: name, stance word, then the chain.
+
+    The judge scores the matched element as a triple (议题、立场、论据链),
+    so the stance word belongs in α. The stance gate forces both sides of a
+    match to carry the same word, so this nudges matched α up roughly
+    uniformly instead of reordering matches.
+    """
     name = str(issue.get("issue_name") or "")
+    stance = str(issue.get("stance") or "")
     chain = "\n".join(issue.get("argument_chain") or [])
-    if name:
-        return name + "\n" + chain
-    return chain
+    head = " ".join(part for part in (name, stance) if part)
+    if head and chain:
+        return head + "\n" + chain
+    return head or chain
 
 
 _SCORER_CACHE: dict = {}

@@ -267,6 +267,16 @@ def main() -> None:
         )
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = out_dir / "run_lock.json"
+    if args.resume_from and lock_path.is_file():
+        previous = json.loads(lock_path.read_text(encoding="utf-8"))
+        if previous.get("records") not in (None, len(rows)):
+            raise SystemExit(
+                f"refusing to resume: {lock_path} was built from {previous.get('records')} "
+                f"records but the dataset now holds {len(rows)}. The scheduler and optimizer "
+                "state no longer match the data — point --output at a fresh directory "
+                "(e.g. runs/qlora-r16-v2) instead of resuming a stale checkpoint."
+            )
     (out_dir / "run_lock.json").write_text(
         json.dumps(
             {

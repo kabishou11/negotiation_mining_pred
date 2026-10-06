@@ -239,7 +239,14 @@ def fallback_future(issue: dict) -> str:
     return f"接下来双方将围绕「{snippet}」进一步落实相关安排。"
 
 
-def normalize(obj: dict, full_text: str, cfg: dict) -> dict:
+def normalize(obj: dict, docs: list[dict], cfg: dict) -> dict:
+    """Validate one parsed JSON object against the source documents.
+
+    Evidence forcing runs per document: a difflib block recovered against
+    the joined text could cross a document boundary and fail the per-doc
+    substring check in the submission validator.
+    """
+    texts = [str(d.get("full_text") or "") for d in docs]
     issues: list[dict] = []
     futures_in = obj.get("future_argument")
     for item in (obj.get("issue_list") or [])[: cfg["max_issues"]]:
@@ -253,7 +260,10 @@ def normalize(obj: dict, full_text: str, cfg: dict) -> dict:
             continue
         chain: list[str] = []
         for raw in (item.get("argument_chain") or [])[: cfg["max_evidence"]]:
-            fixed = force_substring(str(raw), full_text, cfg)
+            for text in texts:
+                fixed = force_substring(str(raw), text, cfg)
+                if fixed:
+                    break
             if fixed and fixed not in chain:
                 chain.append(fixed)
         if not chain:
@@ -339,10 +349,9 @@ def predict(doc: dict, model, tokenizer, cfg: dict, seed: int) -> dict:
         obj = extract_json(generate(model, tokenizer, build_messages(doc, suffix), cfg))
         if obj is not None and isinstance(obj.get("issue_list"), list):
             break
-    full_text = "\n".join(str(d.get("full_text") or "") for d in doc.get("docs") or [])
     if obj is None:
         return fallback_result(doc, cfg)
-    result = normalize(obj, full_text, cfg)
+    result = normalize(obj, doc.get("docs") or [], cfg)
     if not result["issue_list"]:
         return fallback_result(doc, cfg)
     return result

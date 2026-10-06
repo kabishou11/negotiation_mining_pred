@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from scorer.matching import max_weight_assignment
+from scorer.matching import max_cardinality_assignment, max_weight_assignment
 
 
 def join_chain(chain: list[str]) -> str:
@@ -150,6 +150,7 @@ def score_sample(
     future_sim_fn=None,
     threshold: float = 0.7,
     arg_mode: str = "newline",
+    matching: str = "weight",
 ) -> SampleScore:
     """Score one sample.
 
@@ -157,7 +158,12 @@ def score_sample(
     `future_sim_fn(pred_future, gold_future)` is the future-argument BERTScore-F1.
     The default future stand-in is character ROUGE-L, so offline `S_semantic`
     equals `F1_pred`. Pass a real BERTScore callable for a leaderboard estimate.
+    `matching` picks the bipartite objective: `weight` (max weight sum, the
+    reading 一对一最优匹配 suggests) or `cardinality` (max edge count, the
+    hedge for 一对一 first). The two can disagree only from four vertices up.
     """
+    if matching not in ("weight", "cardinality"):
+        raise ValueError(matching)
     if future_sim_fn is None:
         future_sim_fn = _default_future_sim
     pred_issues = list(pred.get("issue_list") or [])
@@ -187,7 +193,8 @@ def score_sample(
             score = weighted[i][j]
             row.append(score if same_stance and score > threshold else None)
         allowed.append(row)
-    matches = max_weight_assignment(allowed) if n_pred and n_gold else []
+    matcher = max_cardinality_assignment if matching == "cardinality" else max_weight_assignment
+    matches = matcher(allowed) if n_pred and n_gold else []
 
     nc = len(matches)
     precision = nc / n_pred if n_pred else 0.0

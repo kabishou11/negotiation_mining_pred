@@ -423,6 +423,84 @@ def check_loss_mask() -> None:
         _fail("a think span was left in the decoded answer")
 
 
+def _brute_count(weights: list[list[float | None]]) -> int:
+    n = len(weights)
+    m = len(weights[0]) if n else 0
+    best = 0
+
+    def walk(row: int, used: int, count: int) -> None:
+        nonlocal best
+        if row == n:
+            if count > best:
+                best = count
+            return
+        walk(row + 1, used, count)
+        for col in range(m):
+            if used & (1 << col):
+                continue
+            if weights[row][col] is None:
+                continue
+            walk(row + 1, used | (1 << col), count + 1)
+
+    walk(0, 0, 0)
+    return best
+
+
+def check_matching_objectives() -> None:
+    from scorer.matching import max_cardinality_assignment, max_weight_assignment
+    from scorer.score import score_sample, semantic_alpha
+
+    rng = random.Random(7)
+    for _ in range(30):
+        n = rng.randint(1, 5)
+        m = rng.randint(1, 5)
+        weights: list[list[float | None]] = []
+        for _i in range(n):
+            row = []
+            for _j in range(m):
+                if rng.random() < 0.4:
+                    row.append(None)
+                else:
+                    row.append(round(rng.uniform(0.7, 1.0), 3))
+            weights.append(row)
+        chosen = max_cardinality_assignment(weights)
+        cols = [j for _i, j in chosen]
+        if len(cols) != len(set(cols)):
+            _fail("cardinality matching reused a column")
+        if len(chosen) != _brute_count(weights):
+            _fail(f"cardinality not maximal: {len(chosen)} vs {_brute_count(weights)} on {weights}")
+
+    # Four vertices up, the objectives can genuinely disagree: one 0.95 edge
+    # crowds out two 0.71 edges, and the 4-edge flip nets -0.01.
+    diverge = [
+        [0.71, None, None, None],
+        [0.95, 0.71, None, None],
+        [None, 0.95, 0.71, None],
+        [None, None, 0.95, 0.71],
+    ]
+    weight = max_weight_assignment(diverge)
+    cardinality = max_cardinality_assignment(diverge)
+    if len(weight) != 3 or len(cardinality) != 4:
+        _fail(f"objectives did not diverge: weight={weight} cardinality={cardinality}")
+
+    encoder = OrthogonalEncoder()
+
+    def score(matching: str) -> float:
+        pred = {
+            "issue_list": [{"issue_name": "议题", "stance": "support", "argument_chain": ["证据"]}],
+            "future_argument": ["后文"],
+        }
+        return score_sample(pred, pred, encoder, semantic_alpha, matching=matching).score
+
+    if abs(score("weight") - score("cardinality")) > 1e-12:
+        _fail("self-score changed with the matching objective")
+    try:
+        score("bogus")
+        _fail("an unknown matching mode was accepted")
+    except ValueError:
+        pass
+
+
 def check_resume() -> None:
     from scorer.infer import _prepare_resume
 
@@ -535,6 +613,7 @@ def main() -> int:
     check_loss_mask()
     check_rouge()
     check_matching()
+    check_matching_objectives()
     check_threshold()
     train = load_split("train")
     val = load_split("val")

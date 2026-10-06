@@ -244,6 +244,10 @@ def compile_protocol(
     warnings: list[str] = []
     issues: list[dict] = []
     futures: list[str] = []
+    # Exact duplicates only: same name, stance, and ids. Names repeat
+    # legitimately in the semifinal (main issue x3), so name alone must not
+    # be the key; an exact duplicate would just burn a prediction slot.
+    seen_issues: set[tuple[str, str, tuple[str, ...]]] = set()
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -269,6 +273,11 @@ def compile_protocol(
             if not name or not chain:
                 warnings.append(f"issue dropped (empty name or evidence): {name}")
                 continue
+            key = (name, stance, tuple(ids))
+            if key in seen_issues:
+                warnings.append(f"duplicate issue line dropped: {name}")
+                continue
+            seen_issues.add(key)
             issues.append({"issue_name": name, "stance": stance, "argument_chain": chain, "sent_ids": ids})
             continue
         future_match = _FUTURE.match(line)
