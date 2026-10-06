@@ -832,6 +832,19 @@ def check_semantic_trim() -> None:
         _fail(f"semantic trim kept a near-duplicate: {twice}")
 
 
+def check_future_name() -> None:
+    from scorer.compile import mentions_issue
+
+    if not mentions_issue("农产品准入", "双方将推进农产品准入谈判。"):
+        _fail("a name-mentioning future was not detected")
+    if not mentions_issue("农产品准入", "两国农产品贸易将继续扩大。"):
+        _fail("a partial-bigram mention was not detected")
+    if mentions_issue("农产品准入", "双方将加快服务贸易磋商。"):
+        _fail("an unrelated future counted as a mention")
+    if mentions_issue("", "任何文本"):
+        _fail("an empty name should never match")
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
@@ -841,6 +854,7 @@ def main() -> int:
     check_mmr()
     check_semantic_trim()
     check_analyze_headroom()
+    check_future_name()
     check_threshold()
     train = load_split("train")
     val = load_split("val")

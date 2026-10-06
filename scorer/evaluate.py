@@ -227,6 +227,7 @@ def main() -> None:
                     {
                         "sample_id": gold["sample_id"],
                         "mode": arg_mode,
+                        "doc_type": (gold.get("docs") or [{}])[0].get("doc_type"),
                         "score": round(scored.score, 6),
                         "s_ext": round(scored.s_ext, 6),
                         "f1_ext": round(scored.f1_ext, 6),

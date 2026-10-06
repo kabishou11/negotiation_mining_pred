@@ -44,6 +44,24 @@ class Compiled:
         }
 
 
+def _name_grams_of(name: str) -> set[str]:
+    flat = "".join(str(name).split())
+    if len(flat) < 2:
+        return {flat} if flat else set()
+    return {flat[i : i + 2] for i in range(len(flat) - 1)}
+
+
+def mentions_issue(name: str, text: str) -> bool:
+    """Whether `text` already touches the issue name by any 2-gram.
+
+    Measured on the train split: 97.9% of gold futures mention their issue
+    name this way, so a generated future that misses it entirely is
+    off-distribution and worth correcting (see postprocess
+    --future-name-check)."""
+    grams = _name_grams_of(name)
+    return bool(grams) and any(gram in text for gram in grams)
+
+
 def _fallback_future(issue: dict) -> str:
     evidence = issue["argument_chain"][0].strip()
     snippet = evidence[:40]

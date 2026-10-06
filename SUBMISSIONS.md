@@ -113,9 +113,11 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
    - B 队 self-consistency：decode.json `"consistency": 3`（默认 0 关闭，
      开启后 3 倍推理时长），采样 3 次按议题聚类投票合并立场/证据。
    - 都先在 val 上对照单文件/单次，涨分才启用。
-6. **future 措辞是最后的天花板**：S_pred 权重 0.2，且只有匹配议题的
-   future 计分——抽取侧修完仍差一口气时再考虑（改 FUTURE 提示词必须
-   连同重训一起动，防止提示漂移），单独不动。
+6. **future 点题检查**（两队都已实装）：train 实测 97.9% 金标 future
+   含其议题名（全名或 2 字片段）。A 队 `postprocess --future-name-check`
+   对完全不点题的 future 前置"关于{议题}，"；B 队在 normalize 内默认
+   开启（decode.json `future_name_check`）。最小干预、须在技术文档披露。
+   future 措辞的其余天花板（改 FUTURE 提示词）必须连同重训一起动。
 7. 每项只在 val 上验证为正收益后才合并进下一次 test 提交；每天 3 个
    额度按"A 队主线实验 ×2 + 对照 ×1"分配，结果写回上表。
 

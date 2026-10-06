@@ -6,6 +6,7 @@
   "retries": 2,
   "min_issues": 3,
   "few_shot": 1,
+  "future_name_check": true,
   "max_issues": 6,
   "max_evidence": 3,
   "min_evidence_chars": 6,

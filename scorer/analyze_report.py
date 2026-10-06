@@ -126,6 +126,28 @@ def main() -> None:
         note = misses or (f"all matched, alpha={s['alpha']:.2f}" if d["matched"] else "no matches")
         print(f"  {s['sample_id']} score={s['score']:.3f} {note}")
 
+    # doc-type-conditional weakness: a type sitting well below the mean is a
+    # systematic failure, not noise
+    by_type: dict[str, list[float]] = {}
+    for s in samples:
+        by_type.setdefault(str(s.get("doc_type") or "未知"), []).append(s["score"])
+    if len(by_type) > 1:
+        print("score by doc_type:")
+        for doc_type, scores in sorted(by_type.items(), key=lambda kv: sum(kv[1]) / len(kv[1])):
+            print(f"  {doc_type}: {sum(scores) / len(scores):.3f} (n={len(scores)})")
+
+    # which stances do the missed golds carry? a lopsided distribution means
+    # the model has a stance bias (gold: ~62% support / ~35% neutral / ~3% oppose)
+    missed_stance: dict[str, int] = {}
+    for s in samples:
+        for g in s["detail"].get("unmatched_gold") or []:
+            key = str(g.get("stance") or "未知")
+            missed_stance[key] = missed_stance.get(key, 0) + 1
+    total_missed = sum(missed_stance.values())
+    if total_missed:
+        parts = " ".join(f"{k}={v}" for k, v in sorted(missed_stance.items(), key=lambda kv: -kv[1]))
+        print(f"missed gold stances: {parts} (of {total_missed})")
+
 
 if __name__ == "__main__":
     main()

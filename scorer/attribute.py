@@ -82,7 +82,7 @@ def attribute_detail(pred: dict, gold: dict, scored, threshold: float = 0.7) -> 
         ],
         "unmatched_pred": unmatched_pred,
         "unmatched_gold": [
-            str(gold_issues[j].get("issue_name") or "")
+            {"name": str(gold_issues[j].get("issue_name") or ""), "stance": gold_issues[j].get("stance")}
             for j in range(len(gold_issues))
             if j not in matched_gold
         ],

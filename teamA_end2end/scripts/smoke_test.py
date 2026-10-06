@@ -119,6 +119,11 @@ def check_normalize(doc: dict, cfg: dict) -> None:
             _fail(f"trimmed window left the original evidence: {chain[0]}")
     if len(norm["future_argument"]) != len(norm["issue_list"]):
         _fail("futures length drifted from issues")
+    # invariant: after normalize, every future touches its issue name
+    # (97.9% of gold futures do; name-less ones get pointed)
+    for issue, future in zip(norm["issue_list"], norm["future_argument"]):
+        if not e2e._touches_name(issue["issue_name"], future):
+            _fail(f"a future still misses its issue name after pointing: {future}")
     if norm["issue_list"][0]["stance"] != "support":
         _fail("stance map failed")
     if any(i["stance"] not in ("support", "oppose", "neutral") for i in norm["issue_list"]):

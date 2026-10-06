@@ -32,7 +32,7 @@ import argparse
 import json
 from pathlib import Path
 
-from scorer.compile import trim_chain
+from scorer.compile import mentions_issue, trim_chain
 from scorer.datautil import load_split
 from scorer.segment import segment_sample
 
@@ -221,11 +221,20 @@ def main() -> None:
         default=0.0,
         help="MMR redundancy penalty for evidence selection (0 = plain top-k; try 0.5)",
     )
+    parser.add_argument(
+        "--future-name-check",
+        action="store_true",
+        help="prepend the issue name to futures that never touch it — 97.9%% of "
+        "gold futures mention their issue name, so a name-less future is "
+        "off-distribution and loses the free matching characters",
+    )
     parser.add_argument("--encoder", choices=["auto", "bge", "hash"], default="auto")
     parser.add_argument("--device", default="")
     args = parser.parse_args()
-    if not args.trim_evidence and not args.rerank and not args.semantic_trim:
-        raise SystemExit("nothing to do: pass --trim-evidence / --semantic-trim and/or --rerank")
+    if not args.trim_evidence and not args.rerank and not args.semantic_trim and not args.future_name_check:
+        raise SystemExit(
+            "nothing to do: pass --trim-evidence / --semantic-trim / --rerank / --future-name-check"
+        )
     if args.rerank and args.encoder == "hash":
         print("[warn] hash rerank is a smoke test only, never submit it.")
 
@@ -270,13 +279,25 @@ def main() -> None:
     # the lexical trim keeps the run meaningful instead of silently no-op'ing
     use_lexical = args.trim_evidence or (args.semantic_trim and not use_semantic)
 
-    trimmed_count = reranked_count = missing = 0
+    trimmed_count = reranked_count = missing = name_fixed = 0
     for row in rows:
         sample_id = row["sample_id"]
         segmented = segments.get(sample_id)
         if segmented is None:
             missing += 1
             continue
+        if args.future_name_check:
+            issues = row.get("issue_list") or []
+            futures = row.get("future_argument") or []
+            for k, issue in enumerate(issues):
+                if k >= len(futures):
+                    break
+                name = str(issue.get("issue_name") or "")
+                future = str(futures[k])
+                if name and future and not mentions_issue(name, future):
+                    futures[k] = f"关于{name}，{future}"
+                    name_fixed += 1
+            row["future_argument"] = futures
         if args.rerank:
             for issue in row.get("issue_list") or []:
                 chain = list(issue.get("argument_chain") or [])
@@ -324,8 +345,8 @@ def main() -> None:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     print(
         f"wrote {len(rows)} rows to {out_path} reranked_issues={reranked_count} "
-        f"trimmed_evidences={trimmed_count} unknown_ids={missing} "
-        f"substring_ratio={post_hits}/{post_total}"
+        f"trimmed_evidences={trimmed_count} futures_pointed={name_fixed} "
+        f"unknown_ids={missing} substring_ratio={post_hits}/{post_total}"
     )
     print("next: python3 -m scorer.check_submit", out_path, "--split", args.split)
 
