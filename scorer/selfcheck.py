@@ -499,6 +499,38 @@ def check_postprocess_ops(sample: dict) -> None:
             _fail("rerank left the source text")
 
 
+def check_postprocess_preflight(sample: dict) -> None:
+    from scorer.postprocess import _neighbourhood, substring_ratio
+
+    segmented = segment_sample(sample)
+    docs_by_id = {sample["sample_id"]: [doc["full_text"] for doc in sample["docs"]]}
+    ratio, hits, total = substring_ratio([_as_result(sample)], docs_by_id)
+    if total == 0 or ratio != 1.0:
+        _fail(f"preflight rejected a valid result: {hits}/{total}")
+    foreign = [
+        {
+            "sample_id": sample["sample_id"],
+            "issue_list": [{"issue_name": "x", "stance": "support", "argument_chain": ["这句证据不属于该文档，用于错配检测。"]}],
+        }
+    ]
+    ratio, _hits, _total = substring_ratio(foreign, docs_by_id)
+    if ratio != 0.0:
+        _fail("preflight accepted foreign evidence")
+
+    ids = align_chain(sample, segmented, list(sample["issue_list"][0]["argument_chain"]))
+    if not ids:
+        return
+    if _neighbourhood(ids, segmented, 0) != ids:
+        _fail("radius 0 changed the model's own sentences")
+    pool = _neighbourhood(ids, segmented, 1)
+    nums = {int(sid[1:]) for sid in ids}
+    if not set(ids) <= set(pool):
+        _fail("neighbourhood dropped a model sentence")
+    for sid in pool:
+        if min(abs(int(sid[1:]) - num) for num in nums) > 1:
+            _fail(f"neighbourhood leaked {sid}")
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
@@ -520,6 +552,7 @@ def main() -> int:
     check_trim()
     check_attribution_consistency(val[:5])
     check_postprocess_ops(host)
+    check_postprocess_preflight(host)
     check_segments(train)
     split = write_dev_split(train)
     print(

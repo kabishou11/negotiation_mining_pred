@@ -16,8 +16,14 @@ export PYTHONUNBUFFERED=1
 MODEL="${1:?pass the local Qwen3-32B directory}"
 ADAPTER="${2:-}"
 SPLIT="${3:-val}"
-shift 3 2>/dev/null || true
-EXTRA="$*"
+# Forward only arguments beyond the first three. A bare `shift 3 || true`
+# leaves MODEL/ADAPTER in "$*" when fewer than three args were given and
+# they would reach infer as stray positionals.
+EXTRA=""
+if [ "$#" -gt 3 ]; then
+  shift 3
+  EXTRA="$*"
+fi
 if [ -n "$ADAPTER" ] && [ -f "$ADAPTER/adapter_config.json" ]; then
   NAME=$(basename "$(dirname "$ADAPTER")")-$(basename "$ADAPTER")
 else

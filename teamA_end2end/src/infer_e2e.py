@@ -60,12 +60,19 @@ def load_docs(split: str) -> list[dict]:
     return rows
 
 
-def user_prompt(doc: dict) -> str:
+def user_prompt(sample: dict) -> str:
+    """Build the XML user turn from a full sample row.
+
+    The dataset row carries the document inside ``docs``; the prelim split
+    always has exactly one. Passing a bare doc here would silently render an
+    empty <document>, which the smoke test exists to catch.
+    """
+    docs = sample.get("docs") or [{}]
     template = PROMPT_PATH.read_text(encoding="utf-8")
-    text = str(doc.get("full_text") or "")
+    text = "\n".join(str(d.get("full_text") or "") for d in docs)
     return (
-        template.replace("__DOC_TYPE__", doc.get("doc_type") or "unknown")
-        .replace("__PUBLISH_DATE__", doc.get("publish_date") or "unknown")
+        template.replace("__DOC_TYPE__", docs[0].get("doc_type") or "unknown")
+        .replace("__PUBLISH_DATE__", docs[0].get("publish_date") or "unknown")
         .replace("__FULL_TEXT__", text)
     )
 
@@ -85,38 +92,124 @@ def _strip_think(text: str) -> str:
 
 
 def _balanced_object(text: str) -> str | None:
+    """Span of the JSON object starting at the first ``{``.
+
+    Only the first brace counts. When the model's top-level object is
+    truncated, a later inner issue object is still balanced; accepting it
+    would surface a bare issue as the whole result. Truncated output must
+    fall through to `_close_json` instead.
+    """
     start = text.find("{")
-    while start != -1:
-        depth = 0
-        in_string = False
-        escape = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-                continue
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    return text[start : i + 1]
-        start = text.find("{", start + 1)
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
     return None
 
 
-def extract_json(raw: str) -> dict | None:
-    blob = _balanced_object(_strip_think(raw))
-    if blob is None:
+def _close_json(fragment: str) -> str | None:
+    """Close a JSON object truncated mid-generation (max_new_tokens hit).
+
+    Pass one finds the last complete element (a closing quote or bracket).
+    Pass two recomputes the bracket stack over the head alone — pushes that
+    happened after the cut point must not leak into the closers. A dangling
+    key whose value never arrived is dropped, keyed on whether the stack top
+    at the cut is an object (the string was a key) or an array (it was an
+    element). A truncated tail then costs at most the last issue instead of
+    poisoning the whole object.
+    """
+    start = fragment.find("{")
+    if start == -1:
         return None
-    for candidate in (blob, re.sub(r",\s*([}\]])", r"\1", blob)):
+    frag = fragment[start:]
+    in_string = False
+    escape = False
+    last_complete = -1
+    for i, ch in enumerate(frag):
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+                last_complete = i
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "}]":
+            last_complete = i
+    if last_complete < 0:
+        return None
+    head = frag[: last_complete + 1]
+    rest = frag[last_complete + 1 :].lstrip()
+
+    stack: list[str] = []
+    in_string = False
+    escape = False
+    for ch in head:
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append("}")
+        elif ch == "[":
+            stack.append("]")
+        elif ch in "}]":
+            if not stack or stack[-1] != ch:
+                return None
+            stack.pop()
+    if not stack:
+        return None
+
+    drop_key = rest.startswith(":")
+    if not rest and frag[last_complete] == '"' and stack[-1] == "}":
+        opening = head.rfind('"', 0, len(head) - 1)
+        before = head[:opening].rstrip() if opening != -1 else ""
+        drop_key = not before.endswith(":")
+    if drop_key:
+        head = re.sub(r',?\s*"[^"]*"\s*$', "", head)
+    return head + "".join(reversed(stack))
+
+
+def extract_json(raw: str) -> dict | None:
+    text = _strip_think(raw)
+    blob = _balanced_object(text)
+    candidates: list[str] = []
+    if blob is not None:
+        candidates.append(blob)
+        candidates.append(re.sub(r",\s*([}\]])", r"\1", blob))
+    else:
+        closed = _close_json(text)
+        if closed is not None:
+            candidates.append(closed)
+    for candidate in candidates:
         try:
             obj = json.loads(candidate)
         except json.JSONDecodeError:

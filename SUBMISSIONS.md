@@ -23,10 +23,33 @@
 |---|---|---|---|---|---|
 | — | — | 英文 XML 提示 + JSON 修复 + 温度0.2/seed42 | — | — | 未跑 |
 
-## 待用提交槽的实验队列（A 队）
+## 实验决策树（拿到 report.json 后照此走）
 
-1. newline vs mean 证据模式（本地 val 择优后提交一次确认）。
-2. 证据子句裁剪（postprocess --trim-evidence，val 涨分才提）。
-3. bge 证据重排（postprocess --rerank，val 涨分才提）。
-4. 立场二遍校准 + 短输出补抽（infer --stance-check --min-issues 4）。
-5. 重训 adapter（EXTRACT_REPEAT=4，抽取配比反转）后的全套叠加。
+`repro/val.sh` 产出 `*_report.json`（逐样本分数 + 失分归因）。归因三类的
+含义：`low_sim`=证据句对了但相似度没过 0.7（形态问题）；`stance_blocked`=
+相似度过线但立场标错（一票否决）；`gold_missed`/`pred_extra`=议题数量
+不齐（N=max 惩罚）。哪类占比高就先做哪条：
+
+1. **low_sim 占多 → 证据形态**（`scorer/postprocess.py`，免模型）：
+   - `--trim-evidence`（裁到 ~55 字子句窗）与 `--rerank`（bge 选句，
+     `--pool-size 1` 起步，可试 2）在 val 上四象限 A/B：基线 / 只裁 /
+     只排 / 裁+排。本地 val 涨分才提；hash 编码器结果永远不提交。
+2. **stance_blocked 占多 → 立场复核**：`infer --stance-check` 重跑 val
+   A/B。注意它会多花每样本 5 次短生成。
+3. **gold_missed 占多 → 议题补齐**：`--min-issues 4` 先试；`5` 有精度
+   反噬风险（金标 4 议题样本占 ~22%，填错一个 F1 反降），必须单独 A/B。
+4. 每项只在 val 上验证为正收益后才合并进下一次 test 提交；每天 3 个
+   额度按"A 队主线实验 ×2 + 对照 ×1"分配，结果写回上表。
+
+## 重训窗口（L2，B 队首提交之后）
+
+`build_sft` 已改 EXTRACT_REPEAT=4（token 份额 ~70%→~80%），train.py
+epochs 默认 3、checkpoint 全保留。步数 ≈ 21853/16×3 ≈ 4098，约为首训
+（2024 步）的 2 倍墙钟，租卡前先排期。训完逐 checkpoint 跑 dev40：
+
+    python3 -m scorer.infer --split train --ids-file data/dev40_ids.txt \
+        --model MODEL --adapter runs/qlora-r16/checkpoint-K --output result_dev40_K.jsonl
+    python3 -m scorer.evaluate result_dev40_K.jsonl --split train --ids-file data/dev40_ids.txt
+
+选 dev40 最高分的 checkpoint，叠加决策树里已验证的开关做最终提交。
+
