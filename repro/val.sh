@@ -29,7 +29,13 @@ if [ -n "$ADAPTER" ] && [ -f "$ADAPTER/adapter_config.json" ]; then
 else
   NAME=$(basename "${ADAPTER:-base}")
 fi
+# Different experiment flags must write different files: a sampled rerun
+# into the greedy run's output would resume-skip every sample silently.
 OUT="result_${SPLIT}_${NAME}.jsonl"
+if [ -n "$EXTRA" ]; then
+  TAG=$(printf '%s' "$EXTRA" | cksum | cut -d' ' -f1 | cut -c1-6)
+  OUT="result_${SPLIT}_${NAME}_${TAG}.jsonl"
+fi
 # shellcheck disable=SC2086
 python3 -m scorer.infer --split "$SPLIT" --model "$MODEL" --adapter "$ADAPTER" --output "$OUT" $EXTRA
 python3 -m scorer.evaluate "$OUT" --split "$SPLIT" --out "${OUT%.jsonl}_report.json"

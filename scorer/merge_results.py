@@ -5,19 +5,24 @@ of the one allowed base. Three such files already exist (checkpoint-1800,
 -2000, -2024), so this is the only new-score lever that costs zero GPU:
 fuse, check, and let one submission slot measure it.
 
-Per sample, issues are clustered across files by issue-name bigram
-similarity (>= 0.6, one issue per file per cluster). Clusters need
-``--min-votes`` files to survive, which drops single-file hallucinations;
-stances vote, ties resolve to the highest-priority file; evidence chains
-are unioned by frequency (ties by first appearance) and capped; the future
-text comes from the highest-priority file in the cluster — so pass the
-best checkpoint first.
+    Per sample, issues are clustered across files by issue-name bigram
+    similarity (>= 0.6, one issue per file per cluster). The PRIORITY file
+    (pass it first — the best checkpoint) is ANCHORED: every issue it
+    asserts is kept, so the fused file is never weaker in coverage than the
+    best single file (two checkpoints can name the same gold issue so
+    differently that no cluster reaches the vote threshold — measured on
+    real runs). A cluster asserted only by lower-priority files needs
+    ``--min-votes`` of them, which drops single-file hallucinations while
+    still adding issues the priority file missed. Stances vote, ties resolve
+    to the highest-priority file; evidence chains are unioned by frequency
+    with near-duplicates collapsed; the future text comes from the
+    highest-priority file in the cluster.
 
     python3 -m scorer.merge_results result_fused.jsonl r_2024.jsonl r_2000.jsonl r_1800.jsonl
     python3 -m scorer.check_submit result_fused.jsonl --split test
 
-Validate on val first: infer val with each checkpoint, fuse, and
-`repro/eval.sh` the fused file against the singles.
+    Validate on val first: infer val with each checkpoint, fuse, and
+    `repro/eval.sh` the fused file against the singles.
 """
 
 from __future__ import annotations
@@ -77,7 +82,11 @@ def fuse_sample(files_rows: list[dict], min_votes: int, max_issues: int, max_evi
     futures: list[str] = []
     for cluster in clusters:
         votes = len({f for f, _ in cluster})
-        if votes < min_votes:
+        # Priority anchoring: an issue the best file asserts is always kept,
+        # so fusion never loses coverage against the priority file alone.
+        # Only non-priority single-vote clusters are filtered.
+        anchored = any(f == 0 for f, _ in cluster)
+        if votes < min_votes and not anchored:
             continue
         first_idx, first_issue = cluster[0]
         name = _majority([str(i.get("issue_name") or "") for _f, i in cluster])

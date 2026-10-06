@@ -105,9 +105,11 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
    线上分对不上，用一次提交槽做区分实验。
 5. **同基座融合（规则白纸黑字允许，两边各有工具）**：
    - A 队 checkpoint 融合：`python3 -m scorer.merge_results out.jsonl
-     r_2024.jsonl r_2000.jsonl r_1800.jsonl`（最好的放最前；min-votes=2
-     滤单文件幻影；future 取最优 checkpoint）。三个 test 结果文件已在
-     手上，**val 融合对照单文件验证后，这是零 GPU 成本的提交实验**。
+     r_2024.jsonl r_2000.jsonl r_1800.jsonl`（最好的放最前；**优先文件
+     锚定**——它的议题全部保留，融合覆盖面绝不劣于最优单文件；非优先
+     文件的单票议题被滤除；future 取最优 checkpoint）。三个 test 结果
+     文件已在手上，**val 融合对照单文件验证后，这是零 GPU 成本的提交
+     实验**（真实演练曾暴露命名分歧导致的样本丢失，锚定机制已修复）。
    - B 队 self-consistency：decode.json `"consistency": 3`（默认 0 关闭，
      开启后 3 倍推理时长），采样 3 次按议题聚类投票合并立场/证据。
    - 都先在 val 上对照单文件/单次，涨分才启用。

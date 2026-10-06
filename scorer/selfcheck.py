@@ -715,23 +715,28 @@ def check_fuse() -> None:
                 {"issue_name": "关税问题", "stance": "oppose", "argument_chain": ["证甲"]},
                 {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证丙", "证丁"]},
                 {"issue_name": "服务贸易", "stance": "support", "argument_chain": ["双方同意开放两级服务市场。"]},
+                {"issue_name": "渔业谈判", "stance": "support", "argument_chain": ["证据戊"]},
             ],
-            "future_argument": ["后续三", "后续四", "后续服二"],
+            "future_argument": ["后续三", "后续四", "后续服二", "后续五"],
         },
     ]
     fused = fuse_sample(files_rows, min_votes=2, max_issues=6, max_evidence=3)
     names = [issue["issue_name"] for issue in fused["issue_list"]]
-    if names != ["关税问题", "能源合作", "服务贸易"]:
+    # the priority file's own single-vote issue is ANCHORED (kept); the
+    # lower-priority file's single-vote issue is filtered
+    if names != ["关税问题", "能源合作", "单文件幻影", "服务贸易"]:
         _fail(f"fusion kept wrong clusters: {names}")
+    if "渔业谈判" in names:
+        _fail("a non-priority single-vote issue survived the vote filter")
     tariffs = fused["issue_list"][0]
     if tariffs["stance"] != "support" or tariffs["argument_chain"] != ["证甲", "证乙"]:
         _fail(f"fusion majority/chain wrong: {tariffs}")
-    if fused["future_argument"] != ["后续一", "后续二", "后续服一"]:
+    if fused["future_argument"] != ["后续一", "后续二", "后续废", "后续服一"]:
         _fail(f"fusion did not take the priority file's futures: {fused['future_argument']}")
     energy = fused["issue_list"][1]
     if energy["argument_chain"] != ["证丙", "证丁"]:
         _fail(f"evidence union order wrong: {energy}")
-    services = fused["issue_list"][2]
+    services = fused["issue_list"][3]
     if services["argument_chain"] != ["双方同意开放两级服务市场"]:
         _fail(f"near-duplicate evidence did not collapse: {services}")
 

@@ -266,6 +266,10 @@ def main() -> None:
         else:
             print("[warn] semantic trim needs a real encoder; falling back to the lexical heuristic.")
 
+    # when --semantic-trim is requested but the encoder cannot support it,
+    # the lexical trim keeps the run meaningful instead of silently no-op'ing
+    use_lexical = args.trim_evidence or (args.semantic_trim and not use_semantic)
+
     trimmed_count = reranked_count = missing = 0
     for row in rows:
         sample_id = row["sample_id"]
@@ -298,7 +302,7 @@ def main() -> None:
                 if new_chain != chain:
                     trimmed_count += sum(1 for a, b in zip(chain, new_chain) if a != b)
                     issue["argument_chain"] = new_chain
-        elif args.trim_evidence:
+        elif use_lexical:
             for issue in row.get("issue_list") or []:
                 chain = list(issue.get("argument_chain") or [])
                 new_chain = trim_chain(str(issue.get("issue_name") or ""), chain)
