@@ -6,13 +6,22 @@ and in one sentence or two consecutive sentences 98.7% of the time. Those
 two rates are the gate for training. Do not simplify the splitter without
 re-running `scripts/align_report.py`.
 
-Constants are load-bearing:
-- primary delimiters are `。！？` and newline, not semicolons (semicolons cut
-  through gold spans and lower containment);
+Constants are load-bearing — and now measured (scripts/sweep_segment.py):
+- raising _MIN_KEEP to 40/48/56 raises single-sentence containment from
+  90% up to 94%, but the POST-TRIM gold-span recall collapses from 0.83
+  to 0.73/0.64/0.58, because longer sentences give the lexical trim more
+  room to cut the gold span's edges. If a longer-sentence profile is ever
+  adopted, it must ship together with encoder-guided trimming
+  (postprocess --semantic-trim) and be re-validated on val;
+- primary delimiters are `。！？` and newline, not semicolons (semicolons
+  cut through gold spans and lower containment);
 - Chinese quotes `“”「」『』` suppress splits, which raises containment;
 - spans longer than 160 characters are broken on `；;`, then short pieces
   shorter than 32 characters merge back if the merge stays within 180;
-- anything still longer than 220 characters is cut on commas.
+- anything still longer than 220 characters is cut on commas;
+- _MAX_MERGE/_PRIMARY_LIMIT/_HARD_CAP each moved ±20 in the sweep without
+  a meaningful containment change — the merge threshold is the only lever
+  that matters, and it trades against the trim.
 """
 
 from __future__ import annotations

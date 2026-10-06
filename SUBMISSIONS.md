@@ -126,13 +126,16 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
 
 - `build_sft` 已改 EXTRACT_REPEAT=4（token 份额 ~70%→~80%），train.py
   epochs 默认 3、checkpoint 全保留。
+- **分句器常量保持现状**：scripts/sweep_segment.py 实测过，提高
+  MIN_KEEP 虽把单句包含率从 90% 推到 94%，但裁剪后金标保留率从 0.83
+  崩到 0.58（长句给了词法选窗更多犯错空间）——除非同时启用
+  `--semantic-trim` 并在 val 上重新验证，否则不要动这四个常量。
 - **必须用新输出目录 `runs/qlora-r16-v2`**：旧目录里的 checkpoint 会让
   train.sh 自动续跑，而数据集已从 16,177 行变为 ~21,200 行，调度器与
   优化器状态错位（train.py 现有守卫会直接拒绝，看到报错就换目录）。
 - 步数 ≈ 21,213/16×3 ≈ 3,978（首训 2 倍墙钟）；save_steps=200 全保留
   ≈ 20 个 checkpoint，**预留 ~20GB 磁盘**。
 - 训完逐 checkpoint 跑 dev40 选优：
-
     python3 -m scorer.infer --split train --ids-file data/dev40_ids.txt \
         --model MODEL --adapter runs/qlora-r16-v2/checkpoint-K --output result_dev40_K.jsonl
     python3 -m scorer.evaluate result_dev40_K.jsonl --split train --ids-file data/dev40_ids.txt
