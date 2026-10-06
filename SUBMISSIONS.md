@@ -32,8 +32,9 @@
 3. **先 val 后 test**：B 先跑 val 估计分数（约 1-2h），
    `python3 -m scorer.evaluate result_b_val.jsonl --split val`，
    达到 0.55+ 才提交 test；不到就先调 few-shot 数量（1→2）再测。
-4. self-consistency（T=0.7×3 投票）是 B 的后备手段——规则允许同基座
-   推理结果融合，B 用它比 A 更划算（base 模型方差大，投票收益高）。
+4. self-consistency 已实装为配置门控：decode.json `"consistency": 3`
+   （默认 0=关闭；开启后每样本 3 次采样，按议题聚类投票合并立场/证据，
+   future 取首个候选）。val 对照单次涨分才开启，代价是 3 倍推理时长。
 
 ## 防冲突清单（两队互查不判相似）
 
@@ -52,6 +53,12 @@ JSON vs 中文行协议；单体 vs 分层文件；温度 0.2 采样+逐样本�
   ~70+ 字 vs B 截断子串）；长度差 <15 字且逐字率 >0.5 时工具会报警，
   此时把 B 的证据指令改短（20-60 字）。
 - `name_similarity` ~0.9 属预期（都逼近金标命名），不设闸门。
+
+**字符串级审计（每次改动后跑一次，秒级）**：
+`python3 teamA_end2end/scripts/audit_no_sharing.py` —— AST 提取两队全部
+字符串字面量，报告 6 字符以上的非必要共享（提交 schema/立场词/数据集
+字段/框架旗标在白名单内，逐组注明理由）。本轮实测曾抓出两边相同的完成
+日志与帮助文本，已改写。审计通过 = 材料层无逐字复用。
 
 **排期隔离**：B 首提交在 A 队当天实验之前（B 不依赖 val 归因结论），
 两队同日提交错开进行；GPU 先给 B 的 test 推理（一次性 ~2h），再跑
@@ -81,8 +88,14 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
    与默认 weight 分差 ≈0 即永久放下"一对一最优匹配"的口径疑虑；
    newline vs mean 两种证据模式本地一直同时打印，若两者分差明显且
    线上分对不上，用一次提交槽做区分实验。
-5. **self-consistency（规则明确允许"同一基座不同推理结果融合"后再做）**：
-   采样 T=0.7 ×5 投票议题/立场/句 ID，只在上面三招收益都吃干后再上。
+5. **同基座融合（规则白纸黑字允许，两边各有工具）**：
+   - A 队 checkpoint 融合：`python3 -m scorer.merge_results out.jsonl
+     r_2024.jsonl r_2000.jsonl r_1800.jsonl`（最好的放最前；min-votes=2
+     滤单文件幻影；future 取最优 checkpoint）。三个 test 结果文件已在
+     手上，**val 融合对照单文件验证后，这是零 GPU 成本的提交实验**。
+   - B 队 self-consistency：decode.json `"consistency": 3`（默认 0 关闭，
+     开启后 3 倍推理时长），采样 3 次按议题聚类投票合并立场/证据。
+   - 都先在 val 上对照单文件/单次，涨分才启用。
 6. **future 措辞是最后的天花板**：S_pred 权重 0.2，且只有匹配议题的
    future 计分——抽取侧修完仍差一口气时再考虑（改 FUTURE 提示词必须
    连同重训一起动，防止提示漂移），单独不动。

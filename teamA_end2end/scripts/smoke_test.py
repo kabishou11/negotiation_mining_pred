@@ -132,6 +132,43 @@ def check_fallback(doc: dict, cfg: dict) -> None:
         _fail("fallback length mismatch")
 
 
+def check_merge() -> None:
+    candidates = [
+        {
+            "issue_list": [
+                {"issue_name": "关税问题", "stance": "support", "argument_chain": ["证据甲", "证据乙"]},
+                {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证据丙"]},
+            ],
+            "future_argument": ["后续一", "后续二"],
+        },
+        {
+            "issue_list": [
+                {"issue_name": "关税问题", "stance": "oppose", "argument_chain": ["证据甲"]},
+                {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证据丙", "证据丁"]},
+                {"issue_name": "渔业谈判", "stance": "support", "argument_chain": ["证据戊"]},
+            ],
+            "future_argument": ["后续三", "后续四", "后续五"],
+        },
+    ]
+    cfg = {"max_issues": 6, "max_evidence": 3}
+    merged = e2e.merge_candidates(candidates, cfg)
+    names = [issue["issue_name"] for issue in merged["issue_list"]]
+    if names != ["关税问题", "能源合作", "渔业谈判"]:
+        _fail(f"merge clusters wrong: {names}")
+    tariffs = merged["issue_list"][0]
+    if tariffs["stance"] != "support":
+        _fail(f"merge majority stance wrong: {tariffs}")
+    if tariffs["argument_chain"] != ["证据甲", "证据乙"]:
+        _fail(f"merge evidence frequency order wrong: {tariffs}")
+    if merged["future_argument"] != ["后续一", "后续二", "后续五"]:
+        _fail(f"merge futures misaligned: {merged['future_argument']}")
+    if e2e.merge_candidates([], cfg) is not None:
+        _fail("empty candidate list produced a merge")
+    capped = e2e.merge_candidates(candidates, {"max_issues": 1, "max_evidence": 3})
+    if len(capped["issue_list"]) != 1 or len(capped["future_argument"]) != 1:
+        _fail("max_issues cap broke the futures alignment")
+
+
 def main() -> int:
     cfg = json.loads((Path(__file__).resolve().parents[1] / "configs" / "decode.json").read_text(encoding="utf-8"))
     docs = e2e.load_docs("val")
@@ -141,6 +178,7 @@ def main() -> int:
     check_extract_json()
     check_normalize(doc, cfg)
     check_fallback(doc, cfg)
+    check_merge()
     print(f"smoke_test ok on {doc['sample_id']}")
     return 0
 

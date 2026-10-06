@@ -691,11 +691,46 @@ def check_predict_flow(sample: dict) -> None:
         infer_mod.generate_text = original
 
 
+def check_fuse() -> None:
+    from scorer.merge_results import fuse_sample
+
+    files_rows = [
+        {
+            "issue_list": [
+                {"issue_name": "关税问题", "stance": "support", "argument_chain": ["证甲", "证乙"]},
+                {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证丙"]},
+                {"issue_name": "单文件幻影", "stance": "support", "argument_chain": ["证废"]},
+            ],
+            "future_argument": ["后续一", "后续二", "后续废"],
+        },
+        {
+            "issue_list": [
+                {"issue_name": "关税问题", "stance": "oppose", "argument_chain": ["证甲"]},
+                {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证丙", "证丁"]},
+            ],
+            "future_argument": ["后续三", "后续四"],
+        },
+    ]
+    fused = fuse_sample(files_rows, min_votes=2, max_issues=6, max_evidence=3)
+    names = [issue["issue_name"] for issue in fused["issue_list"]]
+    if names != ["关税问题", "能源合作"]:
+        _fail(f"fusion kept wrong clusters: {names}")
+    tariffs = fused["issue_list"][0]
+    if tariffs["stance"] != "support" or tariffs["argument_chain"] != ["证甲", "证乙"]:
+        _fail(f"fusion majority/chain wrong: {tariffs}")
+    if fused["future_argument"] != ["后续一", "后续二"]:
+        _fail(f"fusion did not take the priority file's futures: {fused['future_argument']}")
+    energy = fused["issue_list"][1]
+    if energy["argument_chain"] != ["证丙", "证丁"]:
+        _fail(f"evidence union order wrong: {energy}")
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
     check_matching()
     check_matching_objectives()
+    check_fuse()
     check_threshold()
     train = load_split("train")
     val = load_split("val")

@@ -26,6 +26,7 @@ import difflib
 import json
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 SRC_DIR = Path(__file__).resolve().parent
@@ -403,10 +404,102 @@ def load_model(model_path: str, device_map: str):
     return model, tokenizer
 
 
+def _name_grams(name: str) -> set[str]:
+    flat = "".join(str(name).split())
+    if len(flat) < 2:
+        return {flat} if flat else set()
+    return {flat[i : i + 2] for i in range(len(flat) - 1)}
+
+
+def _gram_cosine(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / ((len(a) * len(b)) ** 0.5)
+
+
+def merge_candidates(candidates: list[dict], cfg: dict) -> dict | None:
+    """Fuse several normalized predictions of the same sample into one.
+
+    The rules allow fusing inference results of the one allowed base, and a
+    sampled base model profits from voting more than a greedy adapter does.
+    Issues cluster greedily by name similarity; the cluster keeps the name
+    surface that repeats most (ties: first seen), the majority stance, the
+    evidence union ordered by how often each string was drawn, and the
+    future of its earliest member. Deterministic for a given candidate list.
+    """
+    if not candidates:
+        return None
+    clusters: list[list[tuple[int, dict, str]]] = []
+    for cand_idx, cand in enumerate(candidates):
+        cand_futures = cand.get("future_argument") or []
+        for issue_idx, issue in enumerate(cand["issue_list"]):
+            future = str(cand_futures[issue_idx]) if issue_idx < len(cand_futures) else ""
+            grams = _name_grams(issue["issue_name"])
+            best: list[tuple[int, dict, str]] | None = None
+            best_sim = 0.0
+            for cluster in clusters:
+                if any(c == cand_idx for c, _i, _f in cluster):
+                    continue
+                sim = _gram_cosine(grams, _name_grams(cluster[0][1]["issue_name"]))
+                if sim > best_sim:
+                    best, best_sim = cluster, sim
+            if best is not None and best_sim >= 0.6:
+                best.append((cand_idx, issue, future))
+            else:
+                clusters.append([(cand_idx, issue, future)])
+
+    issues: list[dict] = []
+    futures: list[str] = []
+    for cluster in clusters:
+        # Counter.most_common is stable on insertion order, so ties resolve
+        # to the earliest candidate deterministically.
+        name = Counter(issue["issue_name"] for _c, issue, _f in cluster).most_common(1)[0][0]
+        stance = Counter(issue["stance"] for _c, issue, _f in cluster).most_common(1)[0][0]
+        evidence_count: dict[str, int] = {}
+        evidence_order: dict[str, int] = {}
+        for _c, issue, _f in cluster:
+            for ev in issue["argument_chain"]:
+                evidence_count[ev] = evidence_count.get(ev, 0) + 1
+                evidence_order.setdefault(ev, len(evidence_order))
+        chain = [
+            ev
+            for ev, _ in sorted(evidence_count.items(), key=lambda kv: (-kv[1], evidence_order[kv[0]]))
+        ][: int(cfg["max_evidence"])]
+        if not chain:
+            continue
+        future = cluster[0][2]
+        issues.append({"issue_name": name, "stance": stance, "argument_chain": chain})
+        futures.append(future or fallback_future({"argument_chain": chain}))
+        if len(issues) >= int(cfg["max_issues"]):
+            break
+    if not issues:
+        return None
+    return {"issue_list": issues, "future_argument": futures}
+
+
 def predict(doc: dict, model, tokenizer, cfg: dict, seed: int) -> dict:
     import torch
 
     torch.manual_seed(seed)
+    consistency = int(cfg.get("consistency", 0))
+    if consistency > 1:
+        # Voting replaces the JSON-retry loop: each draw is seeded apart, and
+        # unparseable draws simply do not vote. min_issues does not apply —
+        # the merge already maximises coverage across draws.
+        candidates: list[dict] = []
+        for draw in range(consistency):
+            torch.manual_seed(seed + 1000 * draw)
+            obj = extract_json(generate(model, tokenizer, build_messages(doc, cfg), cfg))
+            if obj is None or not isinstance(obj.get("issue_list"), list):
+                continue
+            cand = normalize(obj, doc.get("docs") or [], cfg)
+            if cand["issue_list"]:
+                candidates.append(cand)
+        result = merge_candidates(candidates, cfg) if len(candidates) >= 2 else (candidates[0] if candidates else None)
+        if result is None or not result["issue_list"]:
+            return fallback_result(doc, cfg)
+        return result
+
     obj = None
     for attempt in range(cfg["retries"] + 1):
         suffix = "" if attempt == 0 else (
@@ -444,7 +537,7 @@ def dry_run(docs: list[dict], limit: int, cfg: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--split", choices=["train", "val", "test"], default="test")
-    parser.add_argument("--model", default="", help="local Qwen3-32B directory")
+    parser.add_argument("--model", default="", help="path to the local Qwen3 32B base weights")
     parser.add_argument("--output", default="result.jsonl")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
@@ -493,7 +586,7 @@ def main() -> None:
             handle.write(json.dumps({"sample_id": sample_id, **result}, ensure_ascii=False) + "\n")
             handle.flush()
             written += 1
-    print(f"wrote {written} new lines to {output}")
+    print(f"{written} sample predictions appended/created in {output}")
 
 
 if __name__ == "__main__":
