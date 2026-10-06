@@ -107,8 +107,16 @@ def check_normalize(doc: dict, cfg: dict) -> None:
     }
     norm = e2e.normalize(obj, doc["docs"], cfg)
     chain = norm["issue_list"][0]["argument_chain"]
-    if chain[0] != evidence or not all(c in full for c in chain):
-        _fail(f"evidence forcing failed: {chain}")
+    if not all(c in full for c in chain):
+        _fail(f"evidence forcing left the source: {chain}")
+    focus_len = int(cfg.get("focus_len", 80))
+    if len(evidence) <= focus_len:
+        if chain[0] != evidence:
+            _fail("short verbatim evidence was modified")
+    else:
+        # long evidence is trimmed to a name-bearing window INSIDE itself
+        if chain[0] not in evidence:
+            _fail(f"trimmed window left the original evidence: {chain[0]}")
     if len(norm["future_argument"]) != len(norm["issue_list"]):
         _fail("futures length drifted from issues")
     if norm["issue_list"][0]["stance"] != "support":
@@ -169,6 +177,22 @@ def check_merge() -> None:
         _fail("max_issues cap broke the futures alignment")
 
 
+def check_trim_focus() -> None:
+    name = "农产品准入"
+    long_block = (
+        "经过多轮磋商，双方代表团就关税减免问题交换了意见并互相说明了各自的政策底线，"
+        "最终在农产品准入问题上达成了初步共识并商定了后续工作时间表，"
+        "但服务贸易的开放节奏仍然存在明显分歧，双方同意下周继续会谈。"
+    )
+    trimmed = e2e.trim_to_focus(long_block, name)
+    if len(trimmed) > 80 or trimmed not in long_block:
+        _fail(f"trim_to_focus left the bound or the source: {len(trimmed)}")
+    if "农产品准入" not in trimmed:
+        _fail("trim_to_focus dropped the name-bearing clause")
+    if e2e.trim_to_focus("短句。", name) != "短句。":
+        _fail("short evidence was modified")
+
+
 def main() -> int:
     cfg = json.loads((Path(__file__).resolve().parents[1] / "configs" / "decode.json").read_text(encoding="utf-8"))
     docs = e2e.load_docs("val")
@@ -179,6 +203,7 @@ def main() -> int:
     check_normalize(doc, cfg)
     check_fallback(doc, cfg)
     check_merge()
+    check_trim_focus()
     print(f"smoke_test ok on {doc['sample_id']}")
     return 0
 

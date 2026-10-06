@@ -700,29 +700,51 @@ def check_fuse() -> None:
                 {"issue_name": "关税问题", "stance": "support", "argument_chain": ["证甲", "证乙"]},
                 {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证丙"]},
                 {"issue_name": "单文件幻影", "stance": "support", "argument_chain": ["证废"]},
+                {"issue_name": "服务贸易", "stance": "support", "argument_chain": ["双方同意开放两级服务市场"]},
             ],
-            "future_argument": ["后续一", "后续二", "后续废"],
+            "future_argument": ["后续一", "后续二", "后续废", "后续服一"],
         },
         {
             "issue_list": [
                 {"issue_name": "关税问题", "stance": "oppose", "argument_chain": ["证甲"]},
                 {"issue_name": "能源合作", "stance": "neutral", "argument_chain": ["证丙", "证丁"]},
+                {"issue_name": "服务贸易", "stance": "support", "argument_chain": ["双方同意开放两级服务市场。"]},
             ],
-            "future_argument": ["后续三", "后续四"],
+            "future_argument": ["后续三", "后续四", "后续服二"],
         },
     ]
     fused = fuse_sample(files_rows, min_votes=2, max_issues=6, max_evidence=3)
     names = [issue["issue_name"] for issue in fused["issue_list"]]
-    if names != ["关税问题", "能源合作"]:
+    if names != ["关税问题", "能源合作", "服务贸易"]:
         _fail(f"fusion kept wrong clusters: {names}")
     tariffs = fused["issue_list"][0]
     if tariffs["stance"] != "support" or tariffs["argument_chain"] != ["证甲", "证乙"]:
         _fail(f"fusion majority/chain wrong: {tariffs}")
-    if fused["future_argument"] != ["后续一", "后续二"]:
+    if fused["future_argument"] != ["后续一", "后续二", "后续服一"]:
         _fail(f"fusion did not take the priority file's futures: {fused['future_argument']}")
     energy = fused["issue_list"][1]
     if energy["argument_chain"] != ["证丙", "证丁"]:
         _fail(f"evidence union order wrong: {energy}")
+    services = fused["issue_list"][2]
+    if services["argument_chain"] != ["双方同意开放两级服务市场"]:
+        _fail(f"near-duplicate evidence did not collapse: {services}")
+
+
+def check_mmr() -> None:
+    from scorer.postprocess import _mmr_select
+
+    name_sims = [0.9, 0.85, 0.8062]
+    pair = [
+        [1.0, 0.9946, 0.7256],
+        [0.9946, 1.0, 0.6853],
+        [0.7256, 0.6853, 1.0],
+    ]
+    if _mmr_select(name_sims, pair, 2, 0.0) != [0, 1]:
+        _fail("mmr lam=0 did not degrade to plain top-k")
+    if _mmr_select(name_sims, pair, 2, 0.5) != [0, 2]:
+        _fail("mmr did not trade redundancy for diversity")
+    if _mmr_select(name_sims, pair, 3, 0.5)[:1] != [0]:
+        _fail("mmr first pick is not the most relevant sentence")
 
 
 def check_analyze_headroom() -> None:
@@ -764,6 +786,7 @@ def main() -> int:
     check_matching()
     check_matching_objectives()
     check_fuse()
+    check_mmr()
     check_analyze_headroom()
     check_threshold()
     train = load_split("train")

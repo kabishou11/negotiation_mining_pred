@@ -83,9 +83,12 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
 按分支展开（余量最大的先做）：
 
 1. **low_sim 占多 → 证据形态**（`scorer/postprocess.py`，免模型）：
-   - `--trim-evidence`（裁到 ~55 字子句窗）与 `--rerank`（bge 选句，
-     `--pool-size 1` 起步，可试 2）在 val 上四象限 A/B：基线 / 只裁 /
-     只排 / 裁+排。本地 val 涨分才提；hash 编码器结果永远不提交。
+   - `--trim-evidence`（裁到 ~55 字子句窗）与 `--rerank`（bge 选句）在
+     val 上四象限 A/B：基线 / 只裁 / 只排 / 裁+排。本地 val 涨分才提；
+     hash 编码器结果永远不提交。
+   - 进阶变体（四象限胜出后再叠加）：`--pool-size 0`（候选池从"模型句
+     ±邻句"扩到全句）、`--mmr 0.5`（MMR 去冗余选证——金标 2-3 条证据
+     覆盖不同侧面，纯 top-k 会选近重复句稀释余弦；λ 从 0.5 起试 0.3/0.7）。
 2. **stance_blocked 占多 → 立场复核**：`infer --stance-check` 重跑 val
    A/B。注意它会多花每样本 5 次短生成。
 3. **gold_missed 占多 → 议题补齐**：`--min-issues 4` 先试；`5` 有精度

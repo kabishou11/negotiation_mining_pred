@@ -315,6 +315,45 @@ def fallback_future(issue: dict) -> str:
     return f"接下来双方将围绕「{snippet}」进一步落实相关安排。"
 
 
+def trim_to_focus(text: str, name: str, target: int = 53, max_len: int = 80) -> str:
+    """Cut a long recovered evidence down toward the gold evidence length.
+
+    Gold chains average ~53 characters; a 150-character verbatim block
+    dilutes the argument cosine exactly like the first team's whole-sentence
+    problem did. Own algorithm on purpose: each clause window is scored by
+    the issue-name bigrams it keeps plus a length prior toward `target`,
+    which is a different formulation from the other team's window search.
+    """
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+    clauses: list[tuple[int, int]] = []
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in "，。；！？、":
+            if text[start : i + 1].strip():
+                clauses.append((start, i + 1))
+            start = i + 1
+    if start < len(text):
+        clauses.append((start, len(text)))
+    if len(clauses) <= 1:
+        return text
+    grams = _name_grams(name)
+    best: str | None = None
+    best_key: tuple[int, int] | None = None
+    for a in range(len(clauses)):
+        for b in range(a, len(clauses)):
+            piece = text[clauses[a][0] : clauses[b][1]]
+            if len(piece) > max_len:
+                break
+            hits = sum(1 for gram in grams if gram in piece)
+            key = (hits, -abs(len(piece) - target))
+            if best_key is None or key > best_key:
+                best_key, best = key, piece
+    trimmed = (best or text).strip(" ，。；、,; ")
+    return trimmed or text
+
+
 def normalize(obj: dict, docs: list[dict], cfg: dict) -> dict:
     """Validate one parsed JSON object against the source documents.
 
@@ -340,6 +379,8 @@ def normalize(obj: dict, docs: list[dict], cfg: dict) -> dict:
                 fixed = force_substring(str(raw), text, cfg)
                 if fixed:
                     break
+            if fixed and len(fixed) > int(cfg.get("focus_len", 80)):
+                fixed = trim_to_focus(fixed, name)
             if fixed and fixed not in chain:
                 chain.append(fixed)
         if not chain:

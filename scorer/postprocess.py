@@ -73,15 +73,52 @@ def _dot(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
-def rerank_issue(name: str, ids: list[str], segmented, encoder, keep: int, radius: int = 1) -> list[str]:
-    """Top-`keep` candidate sentences by cosine to the issue name, doc order."""
-    pool = _neighbourhood(ids, segmented, radius)
+def _mmr_select(name_sims: list[float], pair_sims: list[list[float]], keep: int, lam: float) -> list[int]:
+    """Maximal Marginal Relevance over the candidate pool.
+
+    Gold chains cover DIFFERENT aspects of the issue, so picking the top-k
+    sentences by name cosine alone tends to return k near-duplicates, which
+    dilutes the argument cosine in both evidence modes. MMR trades a bit of
+    relevance for redundancy: score = sim(name, s) - lam * max sim(s, picked).
+    lam=0 degrades to plain top-k. Ties resolve to the lowest index.
+    """
+    n = len(name_sims)
+    if lam <= 0 or keep <= 1:
+        return sorted(range(n), key=lambda k: (-name_sims[k], k))[:keep]
+    picked: list[int] = []
+    remaining = set(range(n))
+    while len(picked) < min(keep, n):
+        best_k = None
+        best = None
+        for k in sorted(remaining):
+            redundancy = max((pair_sims[k][j] for j in picked), default=0.0)
+            score = name_sims[k] - lam * redundancy
+            if best is None or score > best:
+                best_k, best = k, score
+        picked.append(best_k)
+        remaining.remove(best_k)
+    return picked
+
+
+def rerank_issue(name: str, ids: list[str], segmented, encoder, keep: int, radius: int = 1, mmr: float = 0.0) -> list[str]:
+    """Select `keep` candidate sentences by cosine to the issue name, doc order.
+
+    radius=1 scores the model's sentences plus one neighbour each;
+    radius=0 widens the pool to every sentence in the sample. mmr>0 enables
+    redundancy-aware selection (see `_mmr_select`).
+    """
+    if radius <= 0:
+        pool = [sent.sid for sent in segmented.sentences]
+    else:
+        pool = _neighbourhood(ids, segmented, radius)
     if not pool:
         return []
     vectors = encoder.encode([name] + [segmented.by_id[sid].text for sid in pool])
     name_vec = vectors[0]
-    scored = sorted(range(len(pool)), key=lambda k: (-_dot(name_vec, vectors[k + 1]), pool[k]))
-    chosen = sorted((pool[k] for k in scored[:keep]), key=lambda sid: int(sid[1:]))
+    name_sims = [_dot(name_vec, v) for v in vectors[1:]]
+    pair_sims = [[_dot(a, b) for b in vectors[1:]] for a in vectors[1:]]
+    picked = _mmr_select(name_sims, pair_sims, keep, mmr)
+    chosen = sorted((pool[k] for k in picked), key=lambda sid: int(sid[1:]))
     return [segmented.by_id[sid].text for sid in chosen]
 
 
@@ -126,7 +163,13 @@ def main() -> None:
         "--pool-size",
         type=int,
         default=1,
-        help="rerank candidate neighbourhood radius around the model's sentences",
+        help="rerank candidate neighbourhood radius around the model's sentences; 0 = the whole sample",
+    )
+    parser.add_argument(
+        "--mmr",
+        type=float,
+        default=0.0,
+        help="MMR redundancy penalty for evidence selection (0 = plain top-k; try 0.5)",
     )
     parser.add_argument("--encoder", choices=["auto", "bge", "hash"], default="auto")
     parser.add_argument("--device", default="")
@@ -162,7 +205,7 @@ def main() -> None:
         from scorer.evaluate import pick_encoder
 
         encoder, enc_label = pick_encoder(args.encoder, args.device or None)
-        print(f"[rerank] encoder={enc_label} pool_size={args.pool_size}")
+        print(f"[rerank] encoder={enc_label} pool_size={args.pool_size} mmr={args.mmr}")
 
     trimmed_count = reranked_count = missing = 0
     for row in rows:
@@ -178,7 +221,13 @@ def main() -> None:
                 if not ids or len(ids) != len(chain):
                     continue
                 reranked = rerank_issue(
-                    str(issue.get("issue_name") or ""), ids, segmented, encoder, len(ids), args.pool_size
+                    str(issue.get("issue_name") or ""),
+                    ids,
+                    segmented,
+                    encoder,
+                    len(ids),
+                    args.pool_size,
+                    args.mmr,
                 )
                 if reranked and reranked != chain:
                     reranked_count += 1

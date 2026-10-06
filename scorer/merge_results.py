@@ -82,15 +82,26 @@ def fuse_sample(files_rows: list[dict], min_votes: int, max_issues: int, max_evi
         first_idx, first_issue = cluster[0]
         name = _majority([str(i.get("issue_name") or "") for _f, i in cluster])
         stance = _majority([str(i.get("stance") or "") for _f, i in cluster])
-        evidence_count: dict[str, int] = {}
-        evidence_order: dict[str, int] = {}
+        # Union the chains, collapsing near-duplicates (the same sentence
+        # with a different trailing punctuation recurs across checkpoints)
+        # so redundant variants do not burn evidence slots.
+        kept: list[list] = []  # [text, votes, first_order]
+        seen_order = 0
         for _f, issue in cluster:
             for ev in issue.get("argument_chain") or []:
-                evidence_count[ev] = evidence_count.get(ev, 0) + 1
-                evidence_order.setdefault(ev, len(evidence_order))
+                seen_order += 1
+                grams = _bigrams(ev)
+                hit = next(
+                    (entry for entry in kept if _set_cosine(grams, _bigrams(entry[0])) >= 0.8),
+                    None,
+                )
+                if hit is None:
+                    kept.append([ev, 1, seen_order])
+                else:
+                    hit[1] += 1
         chain = [
-            ev
-            for ev, _ in sorted(evidence_count.items(), key=lambda kv: (-kv[1], evidence_order[kv[0]]))
+            entry[0]
+            for entry in sorted(kept, key=lambda entry: (-entry[1], entry[2]))
         ][:max_evidence]
         if not name or not chain:
             continue
