@@ -438,6 +438,67 @@ def check_resume() -> None:
             _fail(f"resume did not drop a truncated line: {done} {text!r}")
 
 
+def check_trim() -> None:
+    from scorer.compile import trim_chain, trim_evidence_text
+
+    name = "农产品准入"
+    long_sentence = (
+        "双方代表团围绕关税减免问题进行了长达十二个小时的闭门磋商，"
+        "在农产品准入问题上达成了初步共识，"
+        "但服务贸易的开放节奏仍然存在明显分歧，双方同意下周继续会谈。"
+    )
+    trimmed = trim_evidence_text(name, long_sentence)
+    if trimmed not in long_sentence:
+        _fail("trim left the source sentence")
+    if len(trimmed) > 64:
+        _fail(f"trim did not shorten: {len(trimmed)}")
+    if "农产品准入" not in trimmed:
+        _fail("trim dropped the clause matching the issue name")
+    if trim_evidence_text(name, "短句。") != "短句。":
+        _fail("short evidence was modified")
+    no_hit = trim_evidence_text("量子通信", long_sentence)
+    if not no_hit or no_hit not in long_sentence:
+        _fail("no-overlap trim broke the substring property")
+    chain = trim_chain(name, [long_sentence, "在农产品准入问题上达成了初步共识。", long_sentence])
+    if chain != [trimmed, "在农产品准入问题上达成了初步共识。"]:
+        _fail(f"trim_chain dedupe/order wrong: {chain}")
+
+
+def check_attribution_consistency(samples: list[dict]) -> None:
+    from scorer.attribute import attribute_detail, attribute_sample
+
+    encoder = OrthogonalEncoder()
+    for sample in samples:
+        gold = _as_result(sample)
+        flipped = copy.deepcopy(gold)
+        flipped["issue_list"][0]["stance"] = "oppose" if gold["issue_list"][0]["stance"] != "oppose" else "support"
+        scored = score_sample(flipped, gold, encoder, semantic_alpha)
+        counts = attribute_sample(flipped, gold, encoder, semantic_alpha)
+        detail = attribute_detail(flipped, gold, scored)
+        for key in ("matched", "stance_blocked", "low_sim", "pred_extra", "gold_missed"):
+            if counts[key] != detail[key]:
+                _fail(f"attribute_detail diverged on {key}: {counts} vs {detail}")
+
+
+def check_postprocess_ops(sample: dict) -> None:
+    from scorer.postprocess import recover_ids, rerank_issue
+
+    segmented = segment_sample(sample)
+    issue = sample["issue_list"][0]
+    ids = align_chain(sample, segmented, list(issue["argument_chain"]))
+    if not ids:
+        return
+    chain = [segmented.by_id[sid].text for sid in ids]
+    if recover_ids(chain, segmented) != ids:
+        _fail("recover_ids round trip failed")
+    reranked = rerank_issue(issue["issue_name"], ids, segmented, OrthogonalEncoder(), len(ids))
+    if len(reranked) != len(ids):
+        _fail("rerank changed the evidence count")
+    for text in reranked:
+        if not any(text in doc["full_text"] for doc in sample["docs"]):
+            _fail("rerank left the source text")
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
@@ -456,6 +517,9 @@ def main() -> int:
     check_submit(host)
     check_semifinal()
     check_resume()
+    check_trim()
+    check_attribution_consistency(val[:5])
+    check_postprocess_ops(host)
     check_segments(train)
     split = write_dev_split(train)
     print(

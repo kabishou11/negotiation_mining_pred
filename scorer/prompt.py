@@ -22,6 +22,22 @@ FUTURE_INSTRUCTION = """你在根据已经确定的议题、立场和原文证�
 这条话要沿现有机制往下推，用到证据里的实词，可以写“将”“应”“未来”。不要新造文中没有的条约、日期或金额。不要复读整句证据。
 """
 
+STANCE_INSTRUCTION = """你在复核单条议题的立场标注。只输出一行：STANCE support、STANCE oppose 或 STANCE neutral。
+support：正文在推进、落实或正面评价该议题。oppose：正文明确反对、抵制或阻止该议题，只有证据句明确反对时才给。neutral：只陈述进展、分歧或中性事实，没有明确倾向。
+"""
+
+
+def stance_check_messages(issue: dict, doc_type: str = "") -> list[dict[str, str]]:
+    chain = "\n".join(f"- {span}" for span in issue.get("argument_chain") or [])
+    user = (
+        STANCE_INSTRUCTION
+        + f"\n文档类型：{doc_type or '未知'}\n议题：{issue.get('issue_name')}\n当前标注：{issue.get('stance')}\n证据句：\n{chain}\n"
+    )
+    return [
+        {"role": "system", "content": "你是立场复核器。关闭思考，只输出一行 STANCE。"},
+        {"role": "user", "content": user},
+    ]
+
 
 def extraction_messages(sample: dict, segmented: Segmented | None = None) -> list[dict[str, str]]:
     segmented = segmented or segment_sample(sample)

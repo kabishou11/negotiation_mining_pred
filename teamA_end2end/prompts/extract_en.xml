@@ -1,0 +1,19 @@
+You are a senior analyst of bilateral negotiation records. Read the document and output ONE valid JSON object only, with no markdown fences and no commentary.
+
+The JSON object must follow exactly this schema:
+{"issue_list": [{"issue_name": str, "stance": str, "argument_chain": [str, ...]}], "future_argument": [str, ...]}
+
+Rules:
+1. issue_list contains 4 to 5 items (at least 3, at most 6). issue_list[0] is the broadest main issue; the rest are distinct sub-issues. Do not split or rephrase the main issue.
+2. issue_name is a Chinese noun phrase of 4 to 16 characters.
+3. stance is one of "support", "oppose", "neutral" and reflects the document's own attitude toward that issue. News reports are mostly neutral; joint statements and policy documents are mostly support; use oppose only for explicit rejection in the text.
+4. Every argument_chain element MUST be a verbatim substring copied from the document below (1 to 3 items per issue, each about 20 to 80 Chinese characters). Never paraphrase, never invent.
+5. future_argument[i] extends issue_list[i] one step forward, in the same order: one Chinese sentence of about 80 characters, reusing the concrete terms of the evidence. Do not invent treaties, dates or amounts.
+6. len(future_argument) MUST equal len(issue_list).
+
+Document metadata: type=__DOC_TYPE__, publish_date=__PUBLISH_DATE__
+<document>
+__FULL_TEXT__
+</document>
+
+Output the JSON object now.

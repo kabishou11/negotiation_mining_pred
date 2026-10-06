@@ -1,14 +1,18 @@
 """Build the supervised-fine-tuning set from the fit split.
 
-Dev40 is excluded. Extraction is most of the contest score, and those
-rows are the long ones, so every document's extraction record is repeated
-twice. A document that contains `oppose` is repeated four times. Future
-records stay at one copy. Further repetition would replay the same long
-documents and buy little beyond this. Extraction
-targets are ISSUE lines whose evidence ids are capped at 3, matching
-inference. Future targets are one FUTURE line conditioned on the same
-aligned sentences the extractor would hand over, not on the raw gold
-substring. Short gold futures are kept as written.
+Dev40 is excluded. Extraction is most of the contest score, so every
+document's extraction record is repeated four times; a document that
+contains `oppose` is repeated eight. Future records stay at one copy.
+
+Record counts mislead here: an extraction row is roughly six times the
+characters of a future row, so at 2x repeat the loss already saw about
+70% of its tokens from extraction. Four repeats push that near 80%
+while inflating one epoch only ~1.6x; six would buy two more points of
+share for a doubled epoch. Extraction targets are ISSUE lines whose
+evidence ids are capped at 3, matching inference. Future targets are one
+FUTURE line conditioned on the same aligned sentences the extractor would
+hand over, not on the raw gold substring. Short gold futures are kept as
+written.
 
 Character length is converted to tokens with 1.5 characters per token. That
 is the planning ratio for Qwen's Chinese BPE (typical range 1.3–1.8). The
@@ -34,7 +38,7 @@ TRAIN_PATH = OUT_DIR / "train.jsonl"
 STATS_PATH = OUT_DIR / "stats.json"
 CHARS_PER_TOKEN = 1.5
 MAX_EVIDENCE = 3
-EXTRACT_REPEAT = 2
+EXTRACT_REPEAT = 4
 OPPOSE_BOOST = 2
 
 

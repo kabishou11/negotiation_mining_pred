@@ -50,6 +50,75 @@ def _fallback_future(issue: dict) -> str:
     return f"后续将延续「{snippet}」所体现的现有安排。"
 
 
+_TRIM_DELIMS = set("，。！？；：、,,;:")
+_TRIM_MAX_WHOLE = 64
+_TRIM_TARGET = 55
+_TRIM_MIN_CLAUSE = 1
+
+
+def _clause_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    start = 0
+    for i, ch in enumerate(text):
+        if ch in _TRIM_DELIMS:
+            if i + 1 - start >= _TRIM_MIN_CLAUSE and text[start : i + 1].strip():
+                spans.append((start, i + 1))
+            start = i + 1
+    if start < len(text) and text[start:].strip():
+        spans.append((start, len(text)))
+    return spans
+
+
+def _name_bigrams(name: str) -> set[str]:
+    flat = "".join(str(name).split())
+    if len(flat) < 2:
+        return {flat} if flat else set()
+    return {flat[i : i + 2] for i in range(len(flat) - 1)}
+
+
+def trim_evidence_text(name: str, text: str) -> str:
+    """Cut a long evidence sentence down to the clause window that keeps the
+    issue name's bigrams and stays near the gold evidence length (~55 chars).
+
+    Gold evidence averages 53 characters; whole emitted sentences run much
+    longer, which dilutes the bge cosine against the >0.7 threshold. Any
+    returned string is a substring of `text`, and `text` is already an exact
+    source slice, so the submission constraint holds. Sentences at or under
+    64 characters are kept whole.
+    """
+    text = text.strip()
+    if len(text) <= _TRIM_MAX_WHOLE:
+        return text
+    spans = _clause_spans(text)
+    if len(spans) <= 1:
+        return text
+    grams = _name_bigrams(name)
+    best_key: tuple[int, int] | None = None
+    best = ""
+    for a in range(len(spans)):
+        for b in range(a, len(spans)):
+            start, end = spans[a][0], spans[b][1]
+            if end - start > _TRIM_MAX_WHOLE:
+                break
+            piece = text[start:end]
+            score = sum(1 for gram in grams if gram in piece)
+            key = (score, -abs(len(piece) - _TRIM_TARGET))
+            if best_key is None or key > best_key:
+                best_key = key
+                best = piece
+    trimmed = best.strip(" ,，;；、:： ")
+    return trimmed if trimmed else text
+
+
+def trim_chain(issue_name: str, chain: list[str]) -> list[str]:
+    out: list[str] = []
+    for evidence in chain:
+        trimmed = trim_evidence_text(issue_name, evidence)
+        if trimmed and trimmed not in out:
+            out.append(trimmed)
+    return out or list(chain)
+
+
 _SUPPORT_DOC_TYPES = {"联合声明", "政策文件", "记者会"}
 
 

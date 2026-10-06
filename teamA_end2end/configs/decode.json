@@ -1,0 +1,11 @@
+{
+  "temperature": 0.2,
+  "top_p": 0.9,
+  "seed": 42,
+  "max_new_tokens": 1400,
+  "retries": 2,
+  "max_issues": 6,
+  "max_evidence": 3,
+  "min_evidence_chars": 6,
+  "max_evidence_chars": 220
+}

@@ -1,7 +1,33 @@
-# A 队——端到端方案（单 adapter 直出 JSON）——仅规划，未写代码
+# A 队——端到端方案（单 adapter 直出 JSON）
 
 > 文件夹：`teamA_end2end/`。严格隔离：禁止复制 B 队任何内容，详见 `../DIVERGENCE_CONTRACT.md`。
 > 基座：Qwen3-32B（唯一生成模型）。资料依据：`../../赛题三_整理md/`。
+
+## 0. 当前状态（2026-10-06 实装）
+
+**已实装为零训练推理流水线**，交给第二支队伍账号提交（第一支队伍账号跑
+`../scorer/` 的 QLoRA 流水线）。与原§5 计划的差异：
+
+- **不训练**：直接用 base Qwen3-32B 零样本，`src/infer_e2e.py` 单文件，无 adapter。
+  原因：算力全部给了第一队，而本队只需要一条独立、合规、互查不判相似的第二成绩线。
+- `configs/train_e2e.yaml` 与 `src/train_e2e.py` 未创建；若后续要给本队单独训练，
+  再按§5 草案补。`src/infer_e2e.py` 与 `--adapter` 兼容所需改动很小，暂不做。
+- 本目录代码 **零引用 `../scorer/`**（数据文件只读共用 `data/prelim/`；
+  本地评分用 `python3 -m scorer.evaluate` 属测量工具，不属于提交管线）。
+
+实现要点（与第一队刻意的不同）：英文系统提示＋XML 包裹正文（`prompts/extract_en.xml`）、
+**不做分句编号**（证据直接从 `<document>` 原文拷贝）、单次调用直出完整 JSON、
+JSON 修复循环（围栏剥离＋括号配平＋尾逗号，最多重试 2 次）、
+证据子串强制：非子串时用 difflib 最长公共块回填（≥10 字且覆盖率 ≥1/2），否则丢弃、
+温度 0.2／top_p 0.9／seed 42（每样本 seed=42+编号，断点续跑稳定）、
+兜底与第一队不同名不同规则（“核心议题”＋最长句 vs “文本主议题”＋首句）。
+
+一键复现：
+
+```sh
+./repro/run.sh /path/to/Qwen3-32B result.jsonl test
+python3 -m scorer.check_submit result.jsonl --split test   # 验收
+```
 
 ## 1. 路线（冻结送审 Grok）
 

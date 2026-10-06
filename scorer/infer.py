@@ -4,6 +4,19 @@ Generation is deterministic: `do_sample=False`, thinking disabled. This module
 is the submission path. It does not download weights and it does not call any
 model other than the checkpoint you pass.
 
+Optional second passes, each flag-gated so the plain path stays identical:
+
+- `--min-issues N`: when extraction settles below N issues, one retry with a
+  prompt that says the count is low. Padding with a wrong issue costs more
+  than the N=max miss, so the retry is kept only when it finds more.
+- `--stance-check`: one focused stance-verification call per issue. A strict
+  parse keeps the original stance on anything but a clean STANCE line.
+- `--ids-file`: restrict inference to those sample_ids (dev40 checkpoint
+  picking).
+
+Evidence-side polish (rerank/trim) lives in `scorer.postprocess`, which can
+also transform files that were already generated.
+
 Dry-run (`--dry-run`) prints the extraction prompt and the per-issue future
 prompt for the first samples without loading weights.
 """
@@ -12,12 +25,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
 from scorer.compile import _fallback_future, compile_protocol, expand_semifinal, rule_fallback
 from scorer.datautil import load_split
-from scorer.prompt import extraction_messages, future_messages, render_prompt
+from scorer.prompt import extraction_messages, future_messages, render_prompt, stance_check_messages
 from scorer.segment import segment_sample
 
 
@@ -118,7 +132,32 @@ def _fill_futures(model, tokenizer, compiled) -> None:
     compiled.future_argument = futures
 
 
-def predict_sample(model, tokenizer, sample: dict, max_new_tokens: int, mode: str = "prelim") -> dict:
+def _calibrate_stances(model, tokenizer, compiled, sample) -> int:
+    """Second-pass stance verification. Strict parse; no parse, no change."""
+    docs = sorted(sample.get("docs") or [], key=lambda doc: doc.get("publish_date") or "")
+    doc_type = docs[0].get("doc_type") or "" if docs else ""
+    changed = 0
+    for issue in compiled.issue_list:
+        try:
+            raw = generate_text(model, tokenizer, stance_check_messages(issue, doc_type), max_new_tokens=12)
+        except Exception:
+            continue
+        match = re.search(r"STANCE\s+(support|oppose|neutral)", raw, re.IGNORECASE)
+        if match and match.group(1).lower() != issue["stance"]:
+            issue["stance"] = match.group(1).lower()
+            changed += 1
+    return changed
+
+
+def predict_sample(
+    model,
+    tokenizer,
+    sample: dict,
+    max_new_tokens: int,
+    mode: str = "prelim",
+    min_issues: int = 0,
+    stance_check: bool = False,
+) -> dict:
     segmented = segment_sample(sample)
     compiled = _compile_extraction(model, tokenizer, sample, segmented, max_new_tokens, "")
     # Greedy decoding repeats itself, so a retry only helps if the prompt changes.
@@ -131,6 +170,21 @@ def predict_sample(model, tokenizer, sample: dict, max_new_tokens: int, mode: st
             max_new_tokens,
             "\n上一次没有输出 ISSUE 行。请至少给出主议题和它的句子编号。",
         )
+    # A padded issue that matches nothing costs precision, so a low-count
+    # retry is adopted only when it actually finds more sides.
+    if min_issues and 0 < len(compiled.issue_list) < min_issues:
+        retry = _compile_extraction(
+            model,
+            tokenizer,
+            sample,
+            segmented,
+            max_new_tokens,
+            f"\n上一次只给出 {len(compiled.issue_list)} 个议题，偏少。请重新通读全文，把明显不同的侧面补全，输出 4 到 5 个 ISSUE 行。",
+        )
+        if len(retry.issue_list) > len(compiled.issue_list):
+            compiled = retry
+    if stance_check and compiled.issue_list:
+        _calibrate_stances(model, tokenizer, compiled, sample)
     if not compiled.issue_list:
         fallback = rule_fallback(sample, segmented)
         if fallback is None:
@@ -206,6 +260,8 @@ def write_predictions(
     *,
     resume: bool,
     mode: str,
+    min_issues: int = 0,
+    stance_check: bool = False,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     done = _prepare_resume(output, resume)
@@ -222,7 +278,15 @@ def write_predictions(
             last_error = ""
             for attempt in (1, 2):
                 try:
-                    result = predict_sample(model, tokenizer, sample, max_new_tokens, mode)
+                    result = predict_sample(
+                        model,
+                        tokenizer,
+                        sample,
+                        max_new_tokens,
+                        mode,
+                        min_issues=min_issues,
+                        stance_check=stance_check,
+                    )
                     break
                 except Exception as exc:
                     last_error = f"{type(exc).__name__}: {exc}"
@@ -253,6 +317,18 @@ def main() -> None:
     parser.add_argument("--output", default="", help="result.jsonl path")
     parser.add_argument("--max-new-tokens", type=int, default=512)
     parser.add_argument("--mode", choices=["prelim", "semifinal"], default="prelim")
+    parser.add_argument("--ids-file", default="", help="infer only these sample_ids, e.g. data/dev40_ids.txt")
+    parser.add_argument(
+        "--min-issues",
+        type=int,
+        default=0,
+        help="retry extraction when fewer than this many issues come back; 0 disables the retry",
+    )
+    parser.add_argument(
+        "--stance-check",
+        action="store_true",
+        help="one focused stance-verification call per issue after extraction",
+    )
     parser.add_argument(
         "--device-map",
         choices=["single", "auto"],
@@ -268,6 +344,15 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     samples = load_split(args.split)
+    if args.ids_file:
+        wanted = {
+            line.strip()
+            for line in Path(args.ids_file).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+        samples = [sample for sample in samples if sample["sample_id"] in wanted]
+        if not samples:
+            raise SystemExit(f"no samples matched {args.ids_file}")
     if args.limit:
         samples = samples[: args.limit]
     if args.dry_run:
@@ -285,6 +370,8 @@ def main() -> None:
         args.max_new_tokens,
         resume=args.resume,
         mode=args.mode,
+        min_issues=args.min_issues,
+        stance_check=args.stance_check,
     )
 
 

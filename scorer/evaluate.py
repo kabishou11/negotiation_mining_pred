@@ -15,6 +15,11 @@ Without torch or bert-score it falls back to the offline encoders and says so
 loudly: those numbers are for smoke tests, not leaderboard estimates. Both
 argument-chain modes (newline-joined vs per-evidence mean) are printed from
 one run, so the pending newline-vs-mean decision needs a single command.
+
+`--out report.json` additionally writes every sample's scores, matches, and
+per-issue miss attribution (stance_blocked / low_sim / extra / gold_missed)
+for both modes, so runs become comparable after the fact instead of living
+only on stdout.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from scorer.attribute import attribute_sample
+from scorer.attribute import attribute_detail
 from scorer.datautil import load_split
 from scorer.encoders import (
     BgeEncoder,
@@ -34,7 +39,7 @@ from scorer.encoders import (
     OrthogonalEncoder,
     get_bert_scorer,
 )
-from scorer.score import score_dataset, semantic_alpha
+from scorer.score import semantic_alpha, score_sample
 
 
 def load_result(path: Path) -> list[dict]:
@@ -114,6 +119,11 @@ def main() -> None:
     parser.add_argument("--encoder", choices=["auto", "bge", "hash", "orthogonal"], default="auto")
     parser.add_argument("--semantic", choices=["auto", "bertscore", "stub"], default="auto")
     parser.add_argument("--device", default="", help="cuda/cpu for the encoders (default: auto)")
+    parser.add_argument(
+        "--out",
+        default="",
+        help="write a JSON report (per-sample scores, matches, attribution) to this path",
+    )
     args = parser.parse_args()
     if args.split == "test":
         raise SystemExit("test has no labels. Use --split val, or --split train --ids-file data/dev40_ids.txt.")
@@ -151,6 +161,15 @@ def main() -> None:
     encoder, enc_label = pick_encoder(args.encoder, args.device or None)
     alpha_fn, future_fn, sem_label = pick_semantic(args.semantic)
     print(f"n={len(pairs)} encoder={enc_label} semantic={sem_label}")
+    report = {
+        "path": str(args.path),
+        "split": args.split,
+        "ids_file": args.ids_file,
+        "encoder": enc_label,
+        "semantic": sem_label,
+        "modes": {},
+        "samples": [],
+    }
 
     pred_chars = [len(str(f)) for pred, _gold in pairs for f in (pred.get("future_argument") or [])]
     gold_chars = [len(str(f)) for _pred, gold in pairs for f in (gold.get("future_argument") or [])]
@@ -161,21 +180,58 @@ def main() -> None:
         )
 
     for arg_mode in ("newline", "mean"):
-        agg = score_dataset(pairs, encoder, alpha_fn, future_sim_fn=future_fn, arg_mode=arg_mode)
+        scored_rows = [
+            score_sample(pred, gold, encoder, alpha_fn, future_sim_fn=future_fn, arg_mode=arg_mode)
+            for pred, gold in pairs
+        ]
+        n = len(scored_rows)
+        agg = {"n": n}
+        for field in ("score", "s_ext", "f1_ext", "alpha", "s_pred", "f1_pred", "s_semantic"):
+            agg[field] = sum(getattr(row, field) for row in scored_rows) / n
         print(
             f"[{arg_mode}] score={agg['score']:.4f} s_ext={agg['s_ext']:.4f} "
             f"f1_ext={agg['f1_ext']:.4f} alpha={agg['alpha']:.4f} "
             f"s_pred={agg['s_pred']:.4f} f1_pred={agg['f1_pred']:.4f} "
             f"s_semantic={agg['s_semantic']:.4f}"
         )
+        details = [attribute_detail(pred, gold, scored) for (pred, gold), scored in zip(pairs, scored_rows)]
+        totals: Counter = Counter()
+        for detail in details:
+            totals.update({key: detail[key] for key in ("matched", "stance_blocked", "low_sim", "pred_extra", "gold_missed")})
+        keys = ("matched", "stance_blocked", "low_sim", "pred_extra", "gold_missed")
+        print("attribution[" + arg_mode + "]: " + " ".join(f"{key}={totals[key]}" for key in keys))
+        if args.out:
+            report["modes"][arg_mode] = {
+                **{field: round(agg[field], 6) for field in agg if field != "n"},
+                "n": n,
+                "attribution": {key: totals[key] for key in keys},
+            }
+            for (pred, gold), scored, detail in zip(pairs, scored_rows, details):
+                report["samples"].append(
+                    {
+                        "sample_id": gold["sample_id"],
+                        "mode": arg_mode,
+                        "score": round(scored.score, 6),
+                        "s_ext": round(scored.s_ext, 6),
+                        "f1_ext": round(scored.f1_ext, 6),
+                        "precision": round(scored.precision, 4),
+                        "recall": round(scored.recall, 4),
+                        "alpha": round(scored.alpha, 6),
+                        "s_pred": round(scored.s_pred, 6),
+                        "f1_pred": round(scored.f1_pred, 6),
+                        "s_semantic": round(scored.s_semantic, 6),
+                        "n_pred": scored.n_pred,
+                        "n_gold": scored.n_gold,
+                        "n_matched": scored.n_matched,
+                        "detail": detail,
+                    }
+                )
 
-    totals: Counter = Counter()
-    for pred, gold in pairs:
-        totals.update(
-            attribute_sample(pred, gold, encoder, alpha_fn, future_sim_fn=future_fn, arg_mode="newline")
-        )
-    keys = ("matched", "stance_blocked", "low_sim", "pred_extra", "gold_missed")
-    print("attribution[newline]: " + " ".join(f"{key}={totals[key]}" for key in keys))
+    if args.out:
+        out_path = Path(args.out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        print(f"report written to {out_path}")
 
 
 if __name__ == "__main__":
