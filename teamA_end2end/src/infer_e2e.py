@@ -72,7 +72,7 @@ def _train_rows() -> list[dict]:
     return _TRAIN_CACHE
 
 
-def few_shot_block(k: int, prefix_chars: int = 500) -> str:
+def few_shot_block(k: int, prefix_chars: int = 500, scan_budget: int = 60) -> str:
     """k worked examples drawn deterministically from the official train split.
 
     Legal and disclosable: train data with its gold annotations, no other
@@ -80,11 +80,16 @@ def few_shot_block(k: int, prefix_chars: int = 500) -> str:
     output keeps only the gold issues whose every evidence string survives
     the truncation, so the example never shows evidence outside the shown
     text — copying from thin air is exactly the behaviour to avoid teaching.
+
+    Among the first `scan_budget` qualifying rows, the picker prefers the
+    most stance-diverse example. The scan happens to surface all-support
+    rows first, and an all-support example would teach exactly the
+    support-bias the leaderboard punishes.
     """
     global _EXAMPLE_CACHE
     if _EXAMPLE_CACHE is None:
-        blocks: list[str] = []
-        for row in _train_rows():
+        qualifying: list[tuple[int, int, str]] = []
+        for order, row in enumerate(_train_rows()):
             docs = row.get("docs") or []
             if not docs:
                 continue
@@ -107,10 +112,11 @@ def few_shot_block(k: int, prefix_chars: int = 500) -> str:
                     kept_futures.append(str(future))
             if len(kept_issues) < 3:
                 continue
+            diversity = len({issue["stance"] for issue in kept_issues})
             payload = json.dumps(
                 {"issue_list": kept_issues, "future_argument": kept_futures}, ensure_ascii=False
             )
-            blocks.append(
+            block = (
                 "<example>\n<document type=\"{t}\" date=\"{d}\">\n{p}\n</document>\n<output>\n{o}\n</output>\n</example>".format(
                     t=docs[0].get("doc_type") or "unknown",
                     d=docs[0].get("publish_date") or "unknown",
@@ -118,9 +124,11 @@ def few_shot_block(k: int, prefix_chars: int = 500) -> str:
                     o=payload,
                 )
             )
-            if len(blocks) == k:
+            qualifying.append((diversity, order, block))
+            if len(qualifying) >= scan_budget:
                 break
-        _EXAMPLE_CACHE = blocks
+        qualifying.sort(key=lambda item: (-item[0], item[1]))
+        _EXAMPLE_CACHE = [block for _d, _o, block in qualifying[:k]]
     return "\n\n".join(_EXAMPLE_CACHE[:k])
 
 

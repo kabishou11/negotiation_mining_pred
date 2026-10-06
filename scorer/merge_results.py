@@ -142,7 +142,11 @@ def main() -> None:
     out_rows: list[dict] = []
     for sample_id, row in reference.items():
         present = [files[sample_id] for files in files_rows if sample_id in files]
-        fused = fuse_sample(present, args.min_votes, args.max_issues, args.max_evidence)
+        # A sample missing from a lower-priority file must not be dropped:
+        # clamp the vote requirement to what is actually present, or the
+        # fused submission would fail check_submit on missing ids.
+        required = min(args.min_votes, len(present))
+        fused = fuse_sample(present, required, args.max_issues, args.max_evidence)
         if not fused["issue_list"]:
             continue
         out_rows.append({"sample_id": sample_id, **fused})

@@ -725,12 +725,46 @@ def check_fuse() -> None:
         _fail(f"evidence union order wrong: {energy}")
 
 
+def check_analyze_headroom() -> None:
+    from scorer.analyze_report import analyze_mode
+
+    def sample(matched, n_pred, n_gold, low_sim, stance_blocked, alpha):
+        detail = {
+            "matched": matched,
+            "stance_blocked": stance_blocked,
+            "low_sim": low_sim,
+            "pred_extra": n_pred - matched - low_sim - stance_blocked,
+            "gold_missed": n_gold - matched,
+        }
+        p, r = matched / n_pred, matched / n_gold
+        f1 = 2 * p * r / (p + r)
+        s_ext = f1 * (0.7 + 0.3 * alpha)
+        return {
+            "n_matched": matched, "n_pred": n_pred, "n_gold": n_gold, "alpha": alpha,
+            "s_ext": s_ext, "score": 0.8 * s_ext, "s_pred": 0.5, "f1_ext": f1, "detail": detail,
+        }
+
+    stats = analyze_mode([sample(3, 5, 5, 2, 0, 0.8)])
+    expected = 0.8 * (0.94 - 0.6 * 0.94)
+    if abs(stats["headroom"]["low_sim"] - expected) > 1e-9:
+        _fail(f"low_sim headroom math wrong: {stats['headroom']} expected {expected}")
+    if stats["headroom"]["stance_blocked"] > 1e-9:
+        _fail("stance headroom should be zero without stance misses")
+    if stats["headroom"]["gold_missed"] > 1e-9:
+        _fail("gold_missed headroom should be zero when low_sim conversions claim every miss")
+
+    mixed = analyze_mode([sample(3, 5, 5, 0, 1, 0.8), sample(4, 5, 5, 0, 0, 0.9)])
+    if mixed["headroom"]["stance_blocked"] <= 0.0:
+        _fail("stance headroom should be positive when stance misses exist")
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
     check_matching()
     check_matching_objectives()
     check_fuse()
+    check_analyze_headroom()
     check_threshold()
     train = load_split("train")
     val = load_split("val")

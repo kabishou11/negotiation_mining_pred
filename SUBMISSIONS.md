@@ -74,7 +74,13 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
 `repro/val.sh` 产出 `*_report.json`（逐样本分数 + 失分归因）。归因三类的
 含义：`low_sim`=证据句对了但相似度没过 0.7（形态问题）；`stance_blocked`=
 相似度过线但立场标错（一票否决）；`gold_missed`/`pred_extra`=议题数量
-不齐（N=max 惩罚）。哪类占比高就先做哪条：
+不齐（N=max 惩罚）。**不要肉眼数占比**——先跑定量排序：
+
+    python3 -m scorer.analyze_report result_val_*_report.json
+
+它把每类失分的"全部修复"换算成分数余量上界并排序，直接给出先做哪条
+和对应命令；还会输出 newline-vs-mean 的本地差值与过度预测警告。下面
+按分支展开（余量最大的先做）：
 
 1. **low_sim 占多 → 证据形态**（`scorer/postprocess.py`，免模型）：
    - `--trim-evidence`（裁到 ~55 字子句窗）与 `--rerank`（bge 选句，
@@ -163,7 +169,14 @@ pip freeze > repro/environment.txt                          # 复现材料，只
 # 1. A 队归因诊断（~2h）：得 result_val_*_report.json
 ./repro/val.sh /path/to/Qwen3-32B runs/qlora-r16/checkpoint-2024
 
-# 2. 读 report 的归因三类占比 → 按上方决策树选支执行 A/B
+# 2. 定量选支（余量排序 + 直接给命令，替代肉眼数占比）
+python3 -m scorer.analyze_report result_val_qlora-r16-checkpoint-2024_report.json
+
+# 2b.（可选，+2h）第二 checkpoint 的 val → 融合对照
+./repro/val.sh /path/to/Qwen3-32B runs/qlora-r16/checkpoint-2000
+python3 -m scorer.merge_results fused_val.jsonl \
+    result_val_qlora-r16-checkpoint-2024.jsonl result_val_qlora-r16-checkpoint-2000.jsonl
+python3 -m scorer.evaluate fused_val.jsonl --split val    # 涨分才在 test 上融合
 python3 -m scorer.evaluate result_val_qlora-r16-checkpoint-2024.jsonl \
     --split val --matching cardinality          # 口径确认（一次性）
 
