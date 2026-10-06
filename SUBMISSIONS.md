@@ -146,11 +146,13 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
 
 ## 复现材料清单（官方 §6/§7 硬性要求，10/12-13 前归集完毕）
 
-复现审查会拿主办方自己的 Qwen3-32B 断网重跑我们的标准命令，核对输出
-一致性；缺一项即取消资格。逐条对照：
+**文档本体已起草：`docs/technical_report.md`**（对照 §6/§7 逐节，
+【服务器待填】标记处由下列命令补齐）。复现审查会拿主办方自己的
+Qwen3-32B 断网重跑我们的标准命令，核对输出一致性；缺一项即取消资格。
 
-- [ ] **技术文档**：总体方案、数据处理流程、训练/微调方法、推理流程、
-      **后处理规则（postprocess 裁剪/重排、立场复核、补抽必须披露）**。
+- [ ] **技术文档**：`docs/technical_report.md`（总体方案、数据处理、
+      训练/推理、**后处理规则全部披露**：postprocess 裁剪/重排/语义
+      选窗、立场复核、补抽、checkpoint 融合、future 点题）。
 - [ ] **基座信息**：Qwen3-32B 官方来源 + **版本/commit hash** + 模型配置
       校验值 + **Tokenizer 校验值**（服务器上 `git log` 权重目录 / 校验
       config.json 与 tokenizer 的 hash，落盘 `repro/base_model.txt`）。

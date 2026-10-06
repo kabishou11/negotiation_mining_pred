@@ -46,6 +46,7 @@ from pathlib import Path
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from scorer.build_sft import EXTRACT_REPEAT, OPPOSE_BOOST, TRAIN_PATH, write_sft
+from scorer import segment
 from scorer.prompt import render_prompt
 
 
@@ -295,6 +296,12 @@ def main() -> None:
                 "lora_targets": LORA_TARGETS,
                 "extract_repeat": EXTRACT_REPEAT,
                 "oppose_extract_repeat": EXTRACT_REPEAT * OPPOSE_BOOST,
+                "segment_constants": {
+                    "min_keep": segment._MIN_KEEP,
+                    "max_merge": segment._MAX_MERGE,
+                    "primary_limit": segment._PRIMARY_LIMIT,
+                    "hard_cap": segment._HARD_CAP,
+                },
                 "save_limit": args.save_limit,
                 "warmup_ratio": 0.1,
                 "weight_decay": 0.01,
