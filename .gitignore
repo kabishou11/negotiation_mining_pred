@@ -6,3 +6,5 @@ runs/
 *.bin
 *.pt
 data/sft/train.jsonl
+.zcode/
+.zcodeignore

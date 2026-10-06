@@ -49,7 +49,10 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
    线上分对不上，用一次提交槽做区分实验。
 5. **self-consistency（规则明确允许"同一基座不同推理结果融合"后再做）**：
    采样 T=0.7 ×5 投票议题/立场/句 ID，只在上面三招收益都吃干后再上。
-6. 每项只在 val 上验证为正收益后才合并进下一次 test 提交；每天 3 个
+6. **future 措辞是最后的天花板**：S_pred 权重 0.2，且只有匹配议题的
+   future 计分——抽取侧修完仍差一口气时再考虑（改 FUTURE 提示词必须
+   连同重训一起动，防止提示漂移），单独不动。
+7. 每项只在 val 上验证为正收益后才合并进下一次 test 提交；每天 3 个
    额度按"A 队主线实验 ×2 + 对照 ×1"分配，结果写回上表。
 
 ## 重训窗口（L2，有门槛，B 队首提交之后）
@@ -96,7 +99,42 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
 ## 提交前检查清单（每次）
 
 1. `python3 -m scorer.check_submit result_xx.jsonl --split test` 通过。
-2. 台账补行（日期/文件/checkpoint/开关/线上分/本地分）。
-3. 产生该文件的 commit 已 push（服务器复现要与本地代码一致）。
+2. **文件名改为 `result.jsonl`**（04_提交要求 §三：统一命名，改名后别再跑推理覆盖它）。
+3. 台账补行（日期/文件/checkpoint/开关/线上分/本地分）。
+4. 产生该文件的 commit 已 push（服务器复现要与本地代码一致）。
+
+## 服务器第一天 runbook（照序复制粘贴）
+
+```sh
+git pull
+pip install -r requirements.txt -r requirements-train.txt   # 环境未装时
+pip freeze > repro/environment.txt                          # 复现材料，只做一次
+
+# 0. 环境自检（~10 分钟）：bnb/transformers 版本、adapter 路径、OOM
+./repro/preflight.sh /path/to/Qwen3-32B runs/qlora-r16/checkpoint-2024
+
+# 1. A 队归因诊断（~2h）：得 result_val_*_report.json
+./repro/val.sh /path/to/Qwen3-32B runs/qlora-r16/checkpoint-2024
+
+# 2. 读 report 的归因三类占比 → 按上方决策树选支执行 A/B
+python3 -m scorer.evaluate result_val_qlora-r16-checkpoint-2024.jsonl \
+    --split val --matching cardinality          # 口径确认（一次性）
+
+# 3. low_sim 主导时的四象限 A/B（免模型，分钟级）
+python3 -m scorer.postprocess result_val_qlora-r16-checkpoint-2024.jsonl \
+    --split val --out pp_trim.jsonl --trim-evidence
+python3 -m scorer.postprocess result_val_qlora-r16-checkpoint-2024.jsonl \
+    --split val --out pp_rerank.jsonl --rerank
+python3 -m scorer.postprocess result_val_qlora-r16-checkpoint-2024.jsonl \
+    --split val --out pp_both.jsonl --rerank --trim-evidence
+# 对 4 个文件各跑一次 repro/eval.sh，择优方向再套到 test 文件上提交
+
+# 4. B 队零训练首提交（~1-2h 推理）
+cd teamA_end2end && ./repro/run.sh /path/to/Qwen3-32B result_b.jsonl test && cd ..
+python3 -m scorer.check_submit result_b.jsonl --split test
+cp result_b.jsonl result.jsonl   # 改名后提交 B 队账号
+```
+
+当天 A 队只在 val A/B 出结论后才花提交额度；额度分配按决策树第 6 条。
 
 

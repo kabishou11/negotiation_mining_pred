@@ -609,6 +609,88 @@ def check_postprocess_preflight(sample: dict) -> None:
             _fail(f"neighbourhood leaked {sid}")
 
 
+def check_predict_flow(sample: dict) -> None:
+    """Drive predict_sample end-to-end with a stubbed generate_text.
+
+    The submission path's control flow (extract -> empty retry -> min-issues
+    retry -> stance check -> futures -> public) never runs in the offline
+    gates; a bug there would surface mid-run on the server. The stub
+    dispatches on the two prompt turns, so no weights are needed. The real
+    generate_text glue around HF generate is exercised live by
+    repro/preflight.sh instead.
+    """
+    import scorer.infer as infer_mod
+
+    segmented = segment_sample(sample)
+    ids = [sent.sid for sent in segmented.sentences[:3]]
+    if len(ids) < 2:
+        return
+    one_issue = f"ISSUE 测试议题甲 ||| support ||| {ids[0]}"
+    two_issues = f"{one_issue}\nISSUE 测试议题乙 ||| neutral ||| {ids[1]}"
+    docs = {sample["sample_id"]: [doc["full_text"] for doc in sample["docs"]]}
+    original = infer_mod.generate_text
+    try:
+        def fake_generate(model, tokenizer, messages, max_new_tokens):
+            system, user = messages[0]["content"], messages[1]["content"]
+            if "观点抽取器" in system:
+                return two_issues if "偏少" in user else one_issue
+            if "立场复核器" in system:
+                return "STANCE oppose"
+            if "论点推演器" in system:
+                return "FUTURE 测试后续观点。"
+            raise AssertionError(f"unexpected prompt: {system[:40]}")
+
+        infer_mod.generate_text = fake_generate
+        result = infer_mod.predict_sample(None, None, sample, 32, min_issues=3, stance_check=True)
+        if len(result["issue_list"]) != 2:
+            _fail(f"min-issues retry not adopted: {len(result['issue_list'])}")
+        if any(issue["stance"] != "oppose" for issue in result["issue_list"]):
+            _fail("stance check did not flip the stances")
+        if len(result["future_argument"]) != 2 or not all(result["future_argument"]):
+            _fail("futures missing or misaligned")
+        if any(set(issue) != {"issue_name", "stance", "argument_chain"} for issue in result["issue_list"]):
+            _fail("public leaked internal fields")
+        line = json.dumps(result, ensure_ascii=False).encode("utf-8")
+        if check_bytes(line + b"\n", expected_ids=[sample["sample_id"]], docs_by_id=docs):
+            _fail("predict flow output rejected by the submission checker")
+
+        def garbage_stance(model, tokenizer, messages, max_new_tokens):
+            system, user = messages[0]["content"], messages[1]["content"]
+            if "观点抽取器" in system:
+                return two_issues if "偏少" in user else one_issue
+            if "立场复核器" in system:
+                return "我觉得偏支持一些"
+            if "论点推演器" in system:
+                return "FUTURE 测试后续观点。"
+            raise AssertionError
+
+        infer_mod.generate_text = garbage_stance
+        result = infer_mod.predict_sample(None, None, sample, 32, min_issues=3, stance_check=True)
+        stances = {issue["stance"] for issue in result["issue_list"]}
+        if stances != {"support", "neutral"}:
+            _fail(f"an unparseable stance reply changed stances: {stances}")
+
+        def empty_extract(model, tokenizer, messages, max_new_tokens):
+            system = messages[0]["content"]
+            if "观点抽取器" in system:
+                return "抱歉，我无法按格式输出。"
+            if "论点推演器" in system:
+                return "FUTURE 兜底后续。"
+            raise AssertionError
+
+        infer_mod.generate_text = empty_extract
+        result = infer_mod.predict_sample(None, None, sample, 32)
+        if len(result["issue_list"]) != 1 or result["issue_list"][0]["issue_name"] != "文本主议题":
+            _fail(f"rule fallback shape wrong: {result['issue_list']}")
+        if len(result["future_argument"]) != 1:
+            _fail("fallback futures drifted")
+        line = (json.dumps(result, ensure_ascii=False) + "\n").encode("utf-8")
+        if check_bytes(line, expected_ids=[sample["sample_id"]], docs_by_id=docs):
+            _fail("fallback output rejected by the submission checker")
+    finally:
+        infer_mod.generate_text = original
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
@@ -632,6 +714,7 @@ def main() -> int:
     check_attribution_consistency(val[:5])
     check_postprocess_ops(host)
     check_postprocess_preflight(host)
+    check_predict_flow(host)
     check_segments(train)
     split = write_dev_split(train)
     print(
