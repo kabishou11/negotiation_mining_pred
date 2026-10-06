@@ -52,7 +52,14 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
-def generate_text(model, tokenizer, messages: list[dict[str, str]], max_new_tokens: int) -> str:
+def generate_text(
+    model,
+    tokenizer,
+    messages: list[dict[str, str]],
+    max_new_tokens: int,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+) -> str:
     import torch
     from transformers import GenerationConfig
 
@@ -65,14 +72,16 @@ def generate_text(model, tokenizer, messages: list[dict[str, str]], max_new_toke
     inputs = {k: v.to(device) for k, v in inputs.items()}
     # A fresh config, not the checkpoint's. Qwen3 ships do_sample=True and
     # some transformers builds put that back when temperature is also set.
-    greedy = GenerationConfig(
-        do_sample=False,
-        max_new_tokens=max_new_tokens,
-        pad_token_id=tokenizer.pad_token_id,
-        eos_token_id=tokenizer.eos_token_id,
-    )
+    # temperature>0 enables seeded sampling for the fusion experiments: the
+    # sampled outputs are merged with the greedy run by scorer.merge_results,
+    # which the rules explicitly allow for the one permitted base model.
+    decode = dict(max_new_tokens=max_new_tokens, pad_token_id=tokenizer.pad_token_id, eos_token_id=tokenizer.eos_token_id)
+    if temperature and temperature > 0:
+        config = GenerationConfig(do_sample=True, temperature=temperature, top_p=top_p, **decode)
+    else:
+        config = GenerationConfig(do_sample=False, **decode)
     with torch.no_grad():
-        output = model.generate(**inputs, generation_config=greedy)
+        output = model.generate(**inputs, generation_config=config)
     new_tokens = output[0, inputs["input_ids"].shape[1] :]
     return _strip_think(tokenizer.decode(new_tokens, skip_special_tokens=True))
 
@@ -105,21 +114,30 @@ def load_model(model_path: str, adapter_path: str = "", device_map: str = "singl
     return model, tokenizer
 
 
-def _compile_extraction(model, tokenizer, sample, segmented, max_new_tokens: int, extra: str):
+def _compile_extraction(
+    model,
+    tokenizer,
+    sample,
+    segmented,
+    max_new_tokens: int,
+    extra: str,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+):
     messages = extraction_messages(sample, segmented)
     if extra:
         messages = [
             messages[0],
             {"role": "user", "content": messages[1]["content"] + extra},
         ]
-    raw = generate_text(model, tokenizer, messages, max_new_tokens)
+    raw = generate_text(model, tokenizer, messages, max_new_tokens, temperature, top_p)
     return compile_protocol(raw, segmented, max_issues=6, max_evidence=3, fill_missing_future=False)
 
 
-def _fill_futures(model, tokenizer, compiled) -> None:
+def _fill_futures(model, tokenizer, compiled, temperature: float = 0.0, top_p: float = 1.0) -> None:
     futures: list[str] = []
     for issue in compiled.issue_list:
-        raw = generate_text(model, tokenizer, future_messages(issue), max_new_tokens=160)
+        raw = generate_text(model, tokenizer, future_messages(issue), 160, temperature, top_p)
         line = ""
         for candidate in raw.splitlines():
             candidate = candidate.strip()
@@ -132,14 +150,14 @@ def _fill_futures(model, tokenizer, compiled) -> None:
     compiled.future_argument = futures
 
 
-def _calibrate_stances(model, tokenizer, compiled, sample) -> int:
+def _calibrate_stances(model, tokenizer, compiled, sample, temperature: float = 0.0, top_p: float = 1.0) -> int:
     """Second-pass stance verification. Strict parse; no parse, no change."""
     docs = sorted(sample.get("docs") or [], key=lambda doc: doc.get("publish_date") or "")
     doc_type = docs[0].get("doc_type") or "" if docs else ""
     changed = 0
     for issue in compiled.issue_list:
         try:
-            raw = generate_text(model, tokenizer, stance_check_messages(issue, doc_type), max_new_tokens=12)
+            raw = generate_text(model, tokenizer, stance_check_messages(issue, doc_type), 12, temperature, top_p)
         except Exception:
             continue
         match = re.search(r"STANCE\s+(support|oppose|neutral)", raw, re.IGNORECASE)
@@ -157,9 +175,19 @@ def predict_sample(
     mode: str = "prelim",
     min_issues: int = 0,
     stance_check: bool = False,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    seed: int = 0,
 ) -> dict:
     segmented = segment_sample(sample)
-    compiled = _compile_extraction(model, tokenizer, sample, segmented, max_new_tokens, "")
+    if temperature and temperature > 0:
+        # per-sample seeding keeps a sampled run reproducible under resume
+        import torch
+
+        torch.manual_seed(seed)
+    compiled = _compile_extraction(
+        model, tokenizer, sample, segmented, max_new_tokens, "", temperature, top_p
+    )
     # Greedy decoding repeats itself, so a retry only helps if the prompt changes.
     if not compiled.issue_list:
         compiled = _compile_extraction(
@@ -169,6 +197,8 @@ def predict_sample(
             segmented,
             max_new_tokens,
             "\n上一次没有输出 ISSUE 行。请至少给出主议题和它的句子编号。",
+            temperature,
+            top_p,
         )
     # A padded issue that matches nothing costs precision, so a low-count
     # retry is adopted only when it actually finds more sides.
@@ -180,11 +210,13 @@ def predict_sample(
             segmented,
             max_new_tokens,
             f"\n上一次只给出 {len(compiled.issue_list)} 个议题，偏少。请重新通读全文，把明显不同的侧面补全，输出 4 到 5 个 ISSUE 行。",
+            temperature,
+            top_p,
         )
         if len(retry.issue_list) > len(compiled.issue_list):
             compiled = retry
     if stance_check and compiled.issue_list:
-        _calibrate_stances(model, tokenizer, compiled, sample)
+        _calibrate_stances(model, tokenizer, compiled, sample, temperature, top_p)
     if not compiled.issue_list:
         fallback = rule_fallback(sample, segmented)
         if fallback is None:
@@ -196,7 +228,7 @@ def predict_sample(
         print(f"rule fallback {sample.get('sample_id')}", file=sys.stderr)
         compiled = fallback
     else:
-        _fill_futures(model, tokenizer, compiled)
+        _fill_futures(model, tokenizer, compiled, temperature, top_p)
     if mode == "semifinal":
         compiled = expand_semifinal(compiled, segmented)
     return compiled.public(sample["sample_id"])
@@ -262,6 +294,9 @@ def write_predictions(
     mode: str,
     min_issues: int = 0,
     stance_check: bool = False,
+    temperature: float = 0.0,
+    top_p: float = 1.0,
+    seed: int = 0,
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     done = _prepare_resume(output, resume)
@@ -286,6 +321,9 @@ def write_predictions(
                         mode,
                         min_issues=min_issues,
                         stance_check=stance_check,
+                        temperature=temperature,
+                        top_p=top_p,
+                        seed=seed + int(re.sub(r"\D", "", sample_id) or 0),
                     )
                     break
                 except Exception as exc:
@@ -330,6 +368,15 @@ def main() -> None:
         help="one focused stance-verification call per issue after extraction",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="0 = greedy (submission default); >0 enables seeded sampling so the "
+        "run can be fused with the greedy one via scorer.merge_results",
+    )
+    parser.add_argument("--top-p", type=float, default=0.9, help="nucleus cutoff when sampling")
+    parser.add_argument("--seed", type=int, default=0, help="base seed; per-sample seed adds the sample number")
+    parser.add_argument(
         "--device-map",
         choices=["single", "auto"],
         default="single",
@@ -372,6 +419,9 @@ def main() -> None:
         mode=args.mode,
         min_issues=args.min_issues,
         stance_check=args.stance_check,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        seed=args.seed,
     )
 
 

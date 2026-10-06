@@ -122,6 +122,49 @@ def rerank_issue(name: str, ids: list[str], segmented, encoder, keep: int, radiu
     return [segmented.by_id[sid].text for sid in chosen]
 
 
+def semantic_trim_chain(name: str, chain: list[str], encoder, target: int = 55, max_len: int = 64) -> list[str]:
+    """Encoder-guided trimming: pick each evidence's clause window by the
+    judge's own encoder's cosine to the issue name, instead of the lexical
+    bigram heuristic in `compile.trim_evidence_text`. Near-duplicate windows
+    still collapse so the joined chain does not repeat itself."""
+    from scorer.compile import _clause_spans, _near_dup
+
+    candidate_sets: list[list[str]] = []
+    for evidence in chain:
+        evidence = evidence.strip()
+        if len(evidence) <= max_len:
+            candidate_sets.append([evidence])
+            continue
+        spans = _clause_spans(evidence)
+        if len(spans) <= 1:
+            candidate_sets.append([evidence])
+            continue
+        windows: list[str] = []
+        for a in range(len(spans)):
+            for b in range(a, len(spans)):
+                start, end = spans[a][0], spans[b][1]
+                if end - start > max_len:
+                    break
+                piece = evidence[start:end].strip(" ，。；、,;:： ")
+                if piece:
+                    windows.append(piece)
+        candidate_sets.append(windows or [evidence])
+
+    flat = [text for group in candidate_sets for text in group]
+    vectors = encoder.encode([name] + flat)
+    name_vec = vectors[0]
+    trimmed: list[str] = []
+    cursor = 0
+    for group in candidate_sets:
+        k = len(group)
+        sims = [_dot(name_vec, vectors[1 + cursor + j]) for j in range(k)]
+        best = group[max(range(k), key=lambda j: (sims[j], -j))]
+        if best and not any(_near_dup(best, kept) for kept in trimmed):
+            trimmed.append(best)
+        cursor += k
+    return trimmed or list(chain)
+
+
 def load_result(path: Path) -> list[dict]:
     rows: list[dict] = []
     with path.open(encoding="utf-8") as handle:
@@ -158,6 +201,13 @@ def main() -> None:
     parser.add_argument("--split", choices=["train", "val", "test"], required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--trim-evidence", action="store_true")
+    parser.add_argument(
+        "--semantic-trim",
+        action="store_true",
+        help="trim with the bge encoder picking the clause window (overrides "
+        "--trim-evidence's lexical heuristic; requires a real encoder, falls "
+        "back loudly on the hash smoke encoder)",
+    )
     parser.add_argument("--rerank", action="store_true")
     parser.add_argument(
         "--pool-size",
@@ -174,8 +224,8 @@ def main() -> None:
     parser.add_argument("--encoder", choices=["auto", "bge", "hash"], default="auto")
     parser.add_argument("--device", default="")
     args = parser.parse_args()
-    if not args.trim_evidence and not args.rerank:
-        raise SystemExit("nothing to do: pass --trim-evidence and/or --rerank")
+    if not args.trim_evidence and not args.rerank and not args.semantic_trim:
+        raise SystemExit("nothing to do: pass --trim-evidence / --semantic-trim and/or --rerank")
     if args.rerank and args.encoder == "hash":
         print("[warn] hash rerank is a smoke test only, never submit it.")
 
@@ -201,11 +251,20 @@ def main() -> None:
         print(f"[warn] {pre_total - pre_hits} evidences are not substrings of split {args.split} docs.")
 
     encoder = None
-    if args.rerank:
+    use_semantic = False
+    if args.rerank or args.semantic_trim:
         from scorer.evaluate import pick_encoder
 
         encoder, enc_label = pick_encoder(args.encoder, args.device or None)
+    if args.rerank:
         print(f"[rerank] encoder={enc_label} pool_size={args.pool_size} mmr={args.mmr}")
+    if args.semantic_trim:
+        # semantic window selection is meaningless on the bigram smoke encoder
+        use_semantic = "bge" in enc_label
+        if use_semantic:
+            print(f"[trim] semantic window selection with {enc_label}")
+        else:
+            print("[warn] semantic trim needs a real encoder; falling back to the lexical heuristic.")
 
     trimmed_count = reranked_count = missing = 0
     for row in rows:
@@ -232,7 +291,14 @@ def main() -> None:
                 if reranked and reranked != chain:
                     reranked_count += 1
                     issue["argument_chain"] = reranked
-        if args.trim_evidence:
+        if use_semantic:
+            for issue in row.get("issue_list") or []:
+                chain = list(issue.get("argument_chain") or [])
+                new_chain = semantic_trim_chain(str(issue.get("issue_name") or ""), chain, encoder)
+                if new_chain != chain:
+                    trimmed_count += sum(1 for a, b in zip(chain, new_chain) if a != b)
+                    issue["argument_chain"] = new_chain
+        elif args.trim_evidence:
             for issue in row.get("issue_list") or []:
                 chain = list(issue.get("argument_chain") or [])
                 new_chain = trim_chain(str(issue.get("issue_name") or ""), chain)

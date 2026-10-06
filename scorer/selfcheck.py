@@ -636,7 +636,7 @@ def check_predict_flow(sample: dict) -> None:
     docs = {sample["sample_id"]: [doc["full_text"] for doc in sample["docs"]]}
     original = infer_mod.generate_text
     try:
-        def fake_generate(model, tokenizer, messages, max_new_tokens):
+        def fake_generate(model, tokenizer, messages, max_new_tokens, temperature=0.0, top_p=1.0):
             system, user = messages[0]["content"], messages[1]["content"]
             if "观点抽取器" in system:
                 return two_issues if "偏少" in user else one_issue
@@ -660,7 +660,7 @@ def check_predict_flow(sample: dict) -> None:
         if check_bytes(line + b"\n", expected_ids=[sample["sample_id"]], docs_by_id=docs):
             _fail("predict flow output rejected by the submission checker")
 
-        def garbage_stance(model, tokenizer, messages, max_new_tokens):
+        def garbage_stance(model, tokenizer, messages, max_new_tokens, temperature=0.0, top_p=1.0):
             system, user = messages[0]["content"], messages[1]["content"]
             if "观点抽取器" in system:
                 return two_issues if "偏少" in user else one_issue
@@ -676,7 +676,7 @@ def check_predict_flow(sample: dict) -> None:
         if stances != {"support", "neutral"}:
             _fail(f"an unparseable stance reply changed stances: {stances}")
 
-        def empty_extract(model, tokenizer, messages, max_new_tokens):
+        def empty_extract(model, tokenizer, messages, max_new_tokens, temperature=0.0, top_p=1.0):
             system = messages[0]["content"]
             if "观点抽取器" in system:
                 return "抱歉，我无法按格式输出。"
@@ -786,6 +786,47 @@ def check_analyze_headroom() -> None:
         _fail("stance headroom should be positive when stance misses exist")
 
 
+def check_semantic_trim() -> None:
+    from scorer.compile import trim_evidence_text
+    from scorer.postprocess import semantic_trim_chain
+
+    class Fixed:
+        """Vectors keyed by content markers: the semantically-close clause
+        outranks the literal-name clause in bge space, the reverse of the
+        lexical heuristic."""
+
+        def encode(self, texts):
+            out = []
+            for text in texts:
+                if text == "农产品准入":
+                    out.append([1.0, 0.0, 0.0])
+                elif "小麦" in text:
+                    out.append([0.95, 0.3122, 0.0])
+                elif "农产品准入" in text:
+                    out.append([0.9, 0.4359, 0.0])
+                else:
+                    out.append([0.3, 0.3, 0.0])
+            return out
+
+    name = "农产品准入"
+    sentence = (
+        "在农产品准入问题上双方达成了初步共识，"
+        "中方将扩大自对方国家进口优质小麦和玉米等粮食产品，"
+        "双方还就下一步磋商安排交换了意见，并同意建立部长级联合工作组。"
+    )
+    lexical = trim_evidence_text(name, sentence)
+    if "农产品准入" not in lexical:
+        _fail(f"lexical trim missed the literal-name clause: {lexical}")
+    semantic = semantic_trim_chain(name, [sentence], Fixed())
+    if len(semantic) != 1 or "小麦" not in semantic[0]:
+        _fail(f"semantic trim did not follow the encoder: {semantic}")
+    if semantic[0] not in sentence:
+        _fail("semantic trim left the source sentence")
+    twice = semantic_trim_chain(name, [sentence, sentence], Fixed())
+    if len(twice) != 1:
+        _fail(f"semantic trim kept a near-duplicate: {twice}")
+
+
 def main() -> int:
     check_loss_mask()
     check_rouge()
@@ -793,6 +834,7 @@ def main() -> int:
     check_matching_objectives()
     check_fuse()
     check_mmr()
+    check_semantic_trim()
     check_analyze_headroom()
     check_threshold()
     train = load_split("train")

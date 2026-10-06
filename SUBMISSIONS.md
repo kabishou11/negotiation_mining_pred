@@ -88,7 +88,13 @@ bitsandbytes/transformers 版本、adapter 路径、tokenizer 漂移、OOM 问�
      hash 编码器结果永远不提交。
    - 进阶变体（四象限胜出后再叠加）：`--pool-size 0`（候选池从"模型句
      ±邻句"扩到全句）、`--mmr 0.5`（MMR 去冗余选证——金标 2-3 条证据
-     覆盖不同侧面，纯 top-k 会选近重复句稀释余弦；λ 从 0.5 起试 0.3/0.7）。
+     覆盖不同侧面，纯 top-k 会选近重复句稀释余弦；λ 从 0.5 起试 0.3/0.7）、
+     `--semantic-trim`（裁剪窗口由 bge 余弦直接选，替代词法 bigram 启发式，
+     与评分器同度量空间；hash 编码器下自动回退词法）。
+4b. **贪心+采样融合**（A 队同基座融合的另一形态）：贪心跑一份后，
+   `infer --temperature 0.7 --top-p 0.9 --seed 0` 再跑 1-2 份（逐样本
+   播种可复现），`merge_results` 三份融合投票。val 上对照贪心单份，
+   涨分才在 test 上重复。
 2. **stance_blocked 占多 → 立场复核**：`infer --stance-check` 重跑 val
    A/B。注意它会多花每样本 5 次短生成。
 3. **gold_missed 占多 → 议题补齐**：`--min-issues 4` 先试；`5` 有精度
