@@ -4,6 +4,8 @@
   "seed": 42,
   "max_new_tokens": 1400,
   "retries": 2,
+  "min_issues": 3,
+  "few_shot": 1,
   "max_issues": 6,
   "max_evidence": 3,
   "min_evidence_chars": 6,

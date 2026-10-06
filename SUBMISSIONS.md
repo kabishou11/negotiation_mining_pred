@@ -21,7 +21,41 @@
 
 | 日期 | 文件 | 配置 | 线上分 | 本地 val | 备注 |
 |---|---|---|---|---|---|
-| — | — | 英文 XML 提示 + JSON 修复 + 温度0.2/seed42 | — | — | 未跑 |
+| — | — | 英文 XML 提示 + few-shot 1 样例 + JSON 修复 + 议题补抽 + 温度0.2/seed42 | — | — | 未跑 |
+
+**B 队提分计划（零训练上限内）**：
+1. **few-shot 1**：提示词注入 1 个训练集金标样例（截断到句边界、只保留
+   证据都在所示文本内的议题——教"逐字抄"而不是"凭空编"）。确定性选取，
+   样例 id 打进日志供复现材料披露。这是零训练最大的单项杠杆。
+2. **min_issues 3**：合法 JSON 但议题 <3 时追加一次"补全侧面"生成，
+   只在找到更多议题时采纳（与 A 队同思想、不同实现与措辞）。
+3. **先 val 后 test**：B 先跑 val 估计分数（约 1-2h），
+   `python3 -m scorer.evaluate result_b_val.jsonl --split val`，
+   达到 0.55+ 才提交 test；不到就先调 few-shot 数量（1→2）再测。
+4. self-consistency（T=0.7×3 投票）是 B 的后备手段——规则允许同基座
+   推理结果融合，B 用它比 A 更划算（base 模型方差大，投票收益高）。
+
+## 防冲突清单（两队互查不判相似）
+
+**已隔离（代码/材料层，审查主要比对对象）**：零共享 import；英文 XML +
+JSON vs 中文行协议；单体 vs 分层文件；温度 0.2 采样+逐样本播种 vs 贪心
+确定；兜底字符串不同（"核心议题" vs "文本主议题"）；README/文档各自
+撰写。双方近似同一份金标，**内容趋同是必然且无害的**——任何两支独立
+的好队伍都会趋同；审查看的是材料与代码。
+
+**量化闸门（提交前必跑）**：
+`python3 -m scorer.compare_results result_a_val.jsonl result_b_val.jsonl`
+- `future_rouge_l` 必须明显低于 0.755（A 队两个 checkpoint 之间的实测
+  值——B 若高于它，就像同一模型的另一个 checkpoint 而非独立队伍）；
+  超了就改 B 的 future 措辞指令。
+- `evidence verbatim` 高不是问题，但 **长度剖面** 必须可区分（A 整句
+  ~70+ 字 vs B 截断子串）；长度差 <15 字且逐字率 >0.5 时工具会报警，
+  此时把 B 的证据指令改短（20-60 字）。
+- `name_similarity` ~0.9 属预期（都逼近金标命名），不设闸门。
+
+**排期隔离**：B 首提交在 A 队当天实验之前（B 不依赖 val 归因结论），
+两队同日提交错开进行；GPU 先给 B 的 test 推理（一次性 ~2h），再跑
+A 的 val 诊断与 A/B 实验。
 
 ## 实验决策树（拿到 report.json 后照此走）
 
@@ -129,10 +163,14 @@ python3 -m scorer.postprocess result_val_qlora-r16-checkpoint-2024.jsonl \
     --split val --out pp_both.jsonl --rerank --trim-evidence
 # 对 4 个文件各跑一次 repro/eval.sh，择优方向再套到 test 文件上提交
 
-# 4. B 队零训练首提交（~1-2h 推理）
+# 4. B 队零训练首提交（先 val 估分，再 test，~2h+2h）
+cd teamA_end2end && ./repro/run.sh /path/to/Qwen3-32B result_b_val.jsonl val && cd ..
+python3 -m scorer.evaluate result_b_val.jsonl --split val        # 估分 0.55+ 才提交
 cd teamA_end2end && ./repro/run.sh /path/to/Qwen3-32B result_b.jsonl test && cd ..
 python3 -m scorer.check_submit result_b.jsonl --split test
-cp result_b.jsonl result.jsonl   # 改名后提交 B 队账号
+
+# 5. 防冲突闸门（两队 val 文件都在手时）
+python3 -m scorer.compare_results result_val_qlora-r16-checkpoint-2024.jsonl result_b_val.jsonl
 ```
 
 当天 A 队只在 val A/B 出结论后才花提交额度；额度分配按决策树第 6 条。

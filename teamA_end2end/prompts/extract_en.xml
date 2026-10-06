@@ -10,7 +10,7 @@ Rules:
 4. Every argument_chain element MUST be a verbatim substring copied from the document below (1 to 3 items per issue, each about 20 to 80 Chinese characters). Never paraphrase, never invent.
 5. future_argument[i] extends issue_list[i] one step forward, in the same order: one Chinese sentence of about 80 characters, reusing the concrete terms of the evidence. Do not invent treaties, dates or amounts.
 6. len(future_argument) MUST equal len(issue_list).
-
+__EXAMPLES__
 Document metadata: type=__DOC_TYPE__, publish_date=__PUBLISH_DATE__
 <document>
 __FULL_TEXT__

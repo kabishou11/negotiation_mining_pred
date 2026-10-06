@@ -60,7 +60,70 @@ def load_docs(split: str) -> list[dict]:
     return rows
 
 
-def user_prompt(sample: dict) -> str:
+_TRAIN_CACHE: list[dict] | None = None
+_EXAMPLE_CACHE: list[str] | None = None
+
+
+def _train_rows() -> list[dict]:
+    global _TRAIN_CACHE
+    if _TRAIN_CACHE is None:
+        _TRAIN_CACHE = load_docs("train")
+    return _TRAIN_CACHE
+
+
+def few_shot_block(k: int, prefix_chars: int = 500) -> str:
+    """k worked examples drawn deterministically from the official train split.
+
+    Legal and disclosable: train data with its gold annotations, no other
+    model involved. The document is truncated at a sentence boundary and the
+    output keeps only the gold issues whose every evidence string survives
+    the truncation, so the example never shows evidence outside the shown
+    text — copying from thin air is exactly the behaviour to avoid teaching.
+    """
+    global _EXAMPLE_CACHE
+    if _EXAMPLE_CACHE is None:
+        blocks: list[str] = []
+        for row in _train_rows():
+            docs = row.get("docs") or []
+            if not docs:
+                continue
+            full = str(docs[0].get("full_text") or "")
+            issues = row.get("issue_list") or []
+            futures = row.get("future_argument") or []
+            if not 3 <= len(issues) <= 5 or len(futures) != len(issues) or len(full) <= prefix_chars:
+                continue
+            cut = full.rfind("。", 0, prefix_chars)
+            if cut == -1:
+                continue
+            prefix = full[: cut + 1]
+            kept_issues, kept_futures = [], []
+            for issue, future in zip(issues, futures):
+                chain = [str(e) for e in issue.get("argument_chain") or []]
+                if chain and all(e in prefix for e in chain):
+                    kept_issues.append(
+                        {"issue_name": issue["issue_name"], "stance": issue["stance"], "argument_chain": chain}
+                    )
+                    kept_futures.append(str(future))
+            if len(kept_issues) < 3:
+                continue
+            payload = json.dumps(
+                {"issue_list": kept_issues, "future_argument": kept_futures}, ensure_ascii=False
+            )
+            blocks.append(
+                "<example>\n<document type=\"{t}\" date=\"{d}\">\n{p}\n</document>\n<output>\n{o}\n</output>\n</example>".format(
+                    t=docs[0].get("doc_type") or "unknown",
+                    d=docs[0].get("publish_date") or "unknown",
+                    p=prefix,
+                    o=payload,
+                )
+            )
+            if len(blocks) == k:
+                break
+        _EXAMPLE_CACHE = blocks
+    return "\n\n".join(_EXAMPLE_CACHE[:k])
+
+
+def user_prompt(sample: dict, cfg: dict) -> str:
     """Build the XML user turn from a full sample row.
 
     The dataset row carries the document inside ``docs``; the prelim split
@@ -68,17 +131,21 @@ def user_prompt(sample: dict) -> str:
     empty <document>, which the smoke test exists to catch.
     """
     docs = sample.get("docs") or [{}]
+    examples = few_shot_block(int(cfg.get("few_shot", 0)))
+    if examples:
+        examples += "\n\nThe example above is from the training split. Treat it as a style reference only; its content has nothing to do with the document below.\n"
     template = PROMPT_PATH.read_text(encoding="utf-8")
     text = "\n".join(str(d.get("full_text") or "") for d in docs)
     return (
-        template.replace("__DOC_TYPE__", docs[0].get("doc_type") or "unknown")
+        template.replace("__EXAMPLES__", examples)
+        .replace("__DOC_TYPE__", docs[0].get("doc_type") or "unknown")
         .replace("__PUBLISH_DATE__", docs[0].get("publish_date") or "unknown")
         .replace("__FULL_TEXT__", text)
     )
 
 
-def build_messages(doc: dict, suffix: str = "") -> list[dict[str, str]]:
-    user = user_prompt(doc)
+def build_messages(sample: dict, cfg: dict, suffix: str = "") -> list[dict[str, str]]:
+    user = user_prompt(sample, cfg)
     if suffix:
         user += "\n" + suffix
     return [
@@ -340,27 +407,38 @@ def predict(doc: dict, model, tokenizer, cfg: dict, seed: int) -> dict:
     import torch
 
     torch.manual_seed(seed)
-    messages = build_messages(doc)
     obj = None
     for attempt in range(cfg["retries"] + 1):
         suffix = "" if attempt == 0 else (
             "Your previous reply was not valid JSON. Output ONLY the JSON object, nothing else."
         )
-        obj = extract_json(generate(model, tokenizer, build_messages(doc, suffix), cfg))
+        obj = extract_json(generate(model, tokenizer, build_messages(doc, cfg, suffix), cfg))
         if obj is not None and isinstance(obj.get("issue_list"), list):
             break
-    if obj is None:
-        return fallback_result(doc, cfg)
-    result = normalize(obj, doc.get("docs") or [], cfg)
-    if not result["issue_list"]:
+    result = normalize(obj, doc.get("docs") or [], cfg) if obj is not None else None
+    # A valid JSON with too few issues gets one more generation. A padded
+    # issue that matches nothing costs precision, so the retry is adopted
+    # only when it actually finds more.
+    min_issues = int(cfg.get("min_issues", 0))
+    if result is not None and min_issues and len(result["issue_list"]) < min_issues:
+        suffix = (
+            f"Your previous reply contained only {len(result['issue_list'])} issue(s). "
+            "Cover every distinct aspect of the document: 4 to 5 issues."
+        )
+        retry = extract_json(generate(model, tokenizer, build_messages(doc, cfg, suffix), cfg))
+        if retry is not None:
+            retried = normalize(retry, doc.get("docs") or [], cfg)
+            if len(retried["issue_list"]) > len(result["issue_list"]):
+                result = retried
+    if result is None or not result["issue_list"]:
         return fallback_result(doc, cfg)
     return result
 
 
-def dry_run(docs: list[dict], limit: int) -> None:
+def dry_run(docs: list[dict], limit: int, cfg: dict) -> None:
     for doc in docs[:limit]:
         print(f"===== {doc['sample_id']} =====")
-        print(build_messages(doc)[1]["content"][:1200])
+        print(build_messages(doc, cfg)[1]["content"][:1500])
 
 
 def main() -> None:
@@ -384,7 +462,7 @@ def main() -> None:
     if args.limit:
         docs = docs[: args.limit]
     if args.dry_run:
-        dry_run(docs, limit=max(1, args.limit or 1))
+        dry_run(docs, limit=max(1, args.limit or 1), cfg=cfg)
         return
     if not args.model:
         raise SystemExit("pass --model, or --dry-run to preview the prompt")

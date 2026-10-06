@@ -25,15 +25,41 @@ def _fail(message: str) -> None:
     raise AssertionError(message)
 
 
-def check_prompt(doc: dict) -> None:
-    user = e2e.user_prompt(doc)
-    if "__FULL_TEXT__" in user or "__DOC_TYPE__" in user:
+def check_prompt(doc: dict, cfg: dict) -> None:
+    user = e2e.user_prompt(doc, cfg)
+    if "__FULL_TEXT__" in user or "__DOC_TYPE__" in user or "__EXAMPLES__" in user:
         _fail("prompt placeholders were not filled")
     if doc["docs"][0]["full_text"] not in user:
         _fail("prompt lost the document body")
-    messages = e2e.build_messages(doc)
+    messages = e2e.build_messages(doc, cfg)
     if messages[0]["role"] != "system" or "JSON" not in messages[0]["content"]:
         _fail("system turn missing")
+
+
+def check_few_shot(cfg: dict) -> None:
+    k = int(cfg.get("few_shot", 0))
+    if k <= 0:
+        return
+    block = e2e.few_shot_block(k)
+    if not block or "<example>" not in block or "<output>" not in block:
+        _fail("few-shot block missing")
+    import re as _re
+
+    # Every example must be internally consistent: each shown evidence string
+    # is a substring of the shown document text.
+    for example in block.split("<example>")[1:]:
+        doc_open = example.index("<document")
+        shown = example[example.index(">", doc_open) + 1 : example.index("</document>")]
+        payload = example.split("<output>")[1].split("</output>")[0]
+        obj = json.loads(payload)
+        if not obj["issue_list"] or len(obj["future_argument"]) != len(obj["issue_list"]):
+            _fail("few-shot output malformed")
+        for issue in obj["issue_list"]:
+            for evidence in issue["argument_chain"]:
+                if evidence not in shown:
+                    _fail("few-shot example shows evidence outside the shown text")
+        if _re.search(r"\bissue_name\b", shown):
+            _fail("few-shot block leaked JSON keys into the document")
 
 
 def check_extract_json() -> None:
@@ -110,7 +136,8 @@ def main() -> int:
     cfg = json.loads((Path(__file__).resolve().parents[1] / "configs" / "decode.json").read_text(encoding="utf-8"))
     docs = e2e.load_docs("val")
     doc = docs[0]
-    check_prompt(doc)
+    check_prompt(doc, cfg)
+    check_few_shot(cfg)
     check_extract_json()
     check_normalize(doc, cfg)
     check_fallback(doc, cfg)
