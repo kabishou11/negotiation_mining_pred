@@ -118,6 +118,14 @@ def main() -> None:
     else:
         print(f"[next] {best[0]} first: +{best[1]:.4f} upper bound.")
 
+    worst = sorted(samples, key=lambda s: s["score"])[:5]
+    print("worst samples (inspect these first):")
+    for s in worst:
+        d = s["detail"]
+        misses = {k: d[k] for k in ("stance_blocked", "low_sim", "gold_missed") if d[k]}
+        note = misses or (f"all matched, alpha={s['alpha']:.2f}" if d["matched"] else "no matches")
+        print(f"  {s['sample_id']} score={s['score']:.3f} {note}")
+
 
 if __name__ == "__main__":
     main()

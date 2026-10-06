@@ -110,11 +110,25 @@ def trim_evidence_text(name: str, text: str) -> str:
     return trimmed if trimmed else text
 
 
+def _near_dup(a: str, b: str, threshold: float = 0.85) -> bool:
+    """Character-bigram cosine over two evidence strings.
+
+    Private to the trim path: two DIFFERENT sentences can trim down to
+    windows sharing most of their text, and a joined chain that repeats
+    itself reads as redundant to the bge cosine against the gold chain.
+    """
+    grams_a = {a[i : i + 2] for i in range(len(a) - 1)} or {a}
+    grams_b = {b[i : i + 2] for i in range(len(b) - 1)} or {b}
+    if not grams_a or not grams_b:
+        return False
+    return len(grams_a & grams_b) / ((len(grams_a) * len(grams_b)) ** 0.5) >= threshold
+
+
 def trim_chain(issue_name: str, chain: list[str]) -> list[str]:
     out: list[str] = []
     for evidence in chain:
         trimmed = trim_evidence_text(issue_name, evidence)
-        if trimmed and trimmed not in out:
+        if trimmed and trimmed not in out and not any(_near_dup(trimmed, kept) for kept in out):
             out.append(trimmed)
     return out or list(chain)
 

@@ -540,6 +540,12 @@ def check_trim() -> None:
     chain = trim_chain(name, [long_sentence, "在农产品准入问题上达成了初步共识。", long_sentence])
     if chain != [trimmed, "在农产品准入问题上达成了初步共识。"]:
         _fail(f"trim_chain dedupe/order wrong: {chain}")
+    # Two different-length evidences that share nearly all their text
+    # collapse into one slot: the joined chain must not repeat itself.
+    near1 = "双方就农产品准入问题达成初步共识，并将尽快签署协议文本。"
+    near2 = "双方就农产品准入问题达成初步共识，并将尽快签署协议文本。双方表示满意。"
+    if trim_chain(name, [near1, near2]) != [near1]:
+        _fail(f"near-duplicate evidences did not collapse: {trim_chain(name, [near1, near2])}")
 
 
 def check_attribution_consistency(samples: list[dict]) -> None:
