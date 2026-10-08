@@ -20,17 +20,6 @@ of the training sequence, the run stops before the 32B weights are loaded.
 
 V100 (capability 7.0) trains in fp16. Ampere and later train in bf16.
 The process uses cuda:0 only. A second card does not speed this script up.
-
-All intermediate checkpoints are kept by default (`--save-limit 0`): the
-first run's `save_total_limit=2` deleted the mid checkpoints and three of
-them scored identically on the leaderboard, so there was no way back. After
-training, pick the adapter by dev40 score, not by step count:
-
-    python3 -m scorer.infer --split train --ids-file data/dev40_ids.txt \
-        --model /path/to/Qwen3-32B --adapter runs/qlora-r16/checkpoint-K \
-        --output result_dev40_k.jsonl
-    python3 -m scorer.evaluate result_dev40_k.jsonl --split train \
-        --ids-file data/dev40_ids.txt
 """
 
 from __future__ import annotations
@@ -46,7 +35,6 @@ from pathlib import Path
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 from scorer.build_sft import EXTRACT_REPEAT, OPPOSE_BOOST, TRAIN_PATH, write_sft
-from scorer import segment
 from scorer.prompt import render_prompt
 
 
@@ -199,13 +187,7 @@ def main() -> None:
         help="0 picks 6144 / 4096 / 3072 from GPU memory. An explicit value is used as given",
     )
     parser.add_argument("--resume-from", default="", help="checkpoint directory to resume")
-    parser.add_argument("--epochs", type=float, default=3.0)
-    parser.add_argument(
-        "--save-limit",
-        type=int,
-        default=0,
-        help="keep only the newest N checkpoints; 0 keeps every checkpoint (default, needed for dev40 picking)",
-    )
+    parser.add_argument("--epochs", type=float, default=2.0)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--r", type=int, default=16)
     parser.add_argument("--alpha", type=int, default=32)
@@ -268,16 +250,6 @@ def main() -> None:
         )
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = out_dir / "run_lock.json"
-    if args.resume_from and lock_path.is_file():
-        previous = json.loads(lock_path.read_text(encoding="utf-8"))
-        if previous.get("records") not in (None, len(rows)):
-            raise SystemExit(
-                f"refusing to resume: {lock_path} was built from {previous.get('records')} "
-                f"records but the dataset now holds {len(rows)}. The scheduler and optimizer "
-                "state no longer match the data — point --output at a fresh directory "
-                "(e.g. runs/qlora-r16-v2) instead of resuming a stale checkpoint."
-            )
     (out_dir / "run_lock.json").write_text(
         json.dumps(
             {
@@ -296,13 +268,6 @@ def main() -> None:
                 "lora_targets": LORA_TARGETS,
                 "extract_repeat": EXTRACT_REPEAT,
                 "oppose_extract_repeat": EXTRACT_REPEAT * OPPOSE_BOOST,
-                "segment_constants": {
-                    "min_keep": segment._MIN_KEEP,
-                    "max_merge": segment._MAX_MERGE,
-                    "primary_limit": segment._PRIMARY_LIMIT,
-                    "hard_cap": segment._HARD_CAP,
-                },
-                "save_limit": args.save_limit,
                 "warmup_ratio": 0.1,
                 "weight_decay": 0.01,
                 "neftune_noise_alpha": 5.0,
@@ -402,8 +367,7 @@ def main() -> None:
         disable_tqdm=False,
         save_strategy="steps",
         save_steps=200,
-        # None keeps every checkpoint; HF treats 0 as "delete all".
-        save_total_limit=args.save_limit or None,
+        save_total_limit=None,
         bf16=use_bf16,
         fp16=not use_bf16,
         gradient_checkpointing=True,
