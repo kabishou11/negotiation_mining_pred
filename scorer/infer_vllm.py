@@ -25,7 +25,8 @@ from scorer.segment import segment_sample
 
 
 def run(split, model, adapter, output, limit, max_new_tokens, resume, mode,
-        min_issues=0, stance_check=False, temperature=0.0, top_p=1.0, seed=0) -> None:
+        min_issues=0, stance_check=False, temperature=0.0, top_p=1.0, seed=0,
+        raft_n=0) -> None:
     import os
     os.environ["VLLM_USE_V1"] = "0"
     from transformers import AutoTokenizer
@@ -68,6 +69,36 @@ def run(split, model, adapter, output, limit, max_new_tokens, resume, mode,
     def compile_of(sample, text):
         return compile_protocol(text, seg_map[sample["sample_id"]], max_issues=6,
                                 max_evidence=3, fill_missing_future=False)
+
+    # ---- RAFT mode: N sampled + 1 greedy extraction per doc, extract only
+    if raft_n:
+        out_path = Path(output)
+        greedy_sp = SamplingParams(temperature=0.0, max_tokens=max_new_tokens)
+        rows_written = 0
+        prompts = [render(extraction_messages(s, seg_map[s["sample_id"]])) for s in todo]
+        for s, o in zip(todo, gen(prompts, greedy_sp)):
+            raw = _strip_think(o.outputs[0].text.strip())
+            compiled = compile_of(s, raw)
+            if compiled.issue_list:
+                with out_path.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(json.dumps({"sample_id": s["sample_id"], "greedy": True,
+                                         "issue_list": compiled.public(s["sample_id"])["issue_list"]},
+                                        ensure_ascii=False) + "\n")
+                    rows_written += 1
+        for k in range(1, raft_n + 1):
+            sp_k = SamplingParams(temperature=0.8, top_p=0.95, seed=seed + k, max_tokens=max_new_tokens)
+            outs = gen(prompts, sp_k)
+            for s, o in zip(todo, outs):
+                raw = _strip_think(o.outputs[0].text.strip())
+                compiled = compile_of(s, raw)
+                if compiled.issue_list:
+                    with out_path.open("a", encoding="utf-8", newline="\n") as fh:
+                        fh.write(json.dumps({"sample_id": s["sample_id"], "greedy": False, "variant": k,
+                                             "issue_list": compiled.public(s["sample_id"])["issue_list"]},
+                                            ensure_ascii=False) + "\n")
+                        rows_written += 1
+        print(f"[vllm] raft done: {rows_written} variant rows", flush=True)
+        return
 
     # ---- phase 1: extraction, batched over all samples
     results, failures = {}, {}
@@ -199,10 +230,12 @@ def main():
     p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--top-p", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--raft-n", type=int, default=0, help="RAFT sampling: N variants + greedy, extract only")
     p.add_argument("--no-resume", action="store_true")
     a = p.parse_args()
     run(a.split, a.model, a.adapter, a.output, a.limit, a.max_new_tokens,
-        not a.no_resume, a.mode, a.min_issues, a.stance_check, a.temperature, a.top_p, a.seed)
+        not a.no_resume, a.mode, a.min_issues, a.stance_check, a.temperature, a.top_p, a.seed,
+        a.raft_n)
 
 
 if __name__ == "__main__":
