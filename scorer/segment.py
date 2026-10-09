@@ -60,9 +60,21 @@ def clause_offsets(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+_MARK_MIN_CHARS = 60
+
+
+def _circled(n: int) -> str:
+    return _CIRCLED[n - 1] if 1 <= n <= len(_CIRCLED) else ""
+
+
 def mark_clauses(text: str) -> str:
-    """Insert ⟨cN⟩ after each in-sentence delimiter so the model can cite
-    clauses by copying digits instead of counting characters."""
+    """Insert a circled number after each in-sentence delimiter so the model
+    cites clauses by copying a visible glyph instead of counting. Only
+    sentences long enough to need cropping get markers: a short sentence is
+    already gold-shaped evidence."""
+    if len(text) < _MARK_MIN_CHARS:
+        return text
     parts: list[str] = []
     n = 1
     buf: list[str] = []
@@ -70,8 +82,10 @@ def mark_clauses(text: str) -> str:
         buf.append(ch)
         if ch in _CLAUSE_DELIMS:
             parts.append("".join(buf))
-            parts.append(f"⟨c{n + 1}⟩")
-            n += 1
+            mark = _circled(n + 1)
+            if mark:
+                parts.append(mark)
+                n += 1
             buf = []
     parts.append("".join(buf))
     return "".join(parts)
@@ -269,6 +283,9 @@ def align_spans(sample: dict, segmented: Segmented, chain: list[str]) -> list[st
                     hit = (s, base)
         if hit is not None:
             s, base = hit
+            if len(base) < _MARK_MIN_CHARS:
+                tokens.append(s.sid)
+                continue
             pos, end = base.find(evidence), base.find(evidence) + len(evidence)
             spans = clause_offsets(base)
             ci = cj = None
@@ -281,7 +298,13 @@ def align_spans(sample: dict, segmented: Segmented, chain: list[str]) -> list[st
                 ci = 1
             if cj is None:
                 cj = len(spans)
-            tokens.append(f"{s.sid}.c{ci}-c{cj}" if cj > ci else f"{s.sid}.c{ci}")
+            lo, hi = _circled(ci), _circled(cj)
+            if not lo:
+                tokens.append(s.sid)
+            elif cj > ci and hi:
+                tokens.append(f"{s.sid}.{lo}-{hi}")
+            else:
+                tokens.append(f"{s.sid}.{lo}")
         else:
             for sid in align_chain(sample, segmented, [evidence]):
                 if sid not in [t.split(":")[0].split(".")[0] for t in tokens]:

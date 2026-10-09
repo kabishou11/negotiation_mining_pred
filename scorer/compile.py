@@ -17,8 +17,19 @@ _ISSUE = re.compile(
     re.IGNORECASE,
 )
 _FUTURE = re.compile(r"^FUTURE\s*(.*)$")
-_SID = re.compile(r"S\d+(?:\.c\d+(?:-c\d+)?)?(?::\d+-\d+)?")
-_SID_TOKEN = re.compile(r"^(S\d+)(?:\.c(\d+)(?:-c(\d+))?)?(?::(\d+)-(\d+))?$")
+_SID = re.compile(r"S\d+(?:\.[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳](?:-[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])?)?(?:\.c\d+(?:-c\d+)?)?(?::\d+-\d+)?")
+_SID_TOKEN = re.compile(
+    r"^(S\d+)(?:\.([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])(?:-([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]))?)?"
+    r"(?:\.c(\d+)(?:-c(\d+))?)?(?::(\d+)-(\d+))?$"
+)
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+
+def _from_circled(ch: str | None) -> int | None:
+    if ch is None:
+        return None
+    i = _CIRCLED.find(ch)
+    return i + 1 if i >= 0 else None
 
 
 def resolve_span(token: str, segmented: Segmented) -> tuple[str, str] | None:
@@ -35,11 +46,20 @@ def resolve_span(token: str, segmented: Segmented) -> tuple[str, str] | None:
     m = _SID_TOKEN.match(token.strip())
     if not m:
         return None
-    sid, ci, cj, a, b = m.groups()
+    sid, cmark_lo, cmark_hi, ci, cj, a, b = m.groups()
     sent = segmented.by_id.get(sid)
     if sent is None:
         return None
     base = sent.text.strip()
+    if cmark_lo is not None:
+        i = _from_circled(cmark_lo)
+        j = _from_circled(cmark_hi) if cmark_hi else i
+        if i is None:
+            return sid, base
+        spans = clause_offsets(base)
+        if j is None or i < 1 or j < i or j > len(spans):
+            j = min(max(i, 1), len(spans))
+        return sid, base[spans[i - 1][0] : spans[j - 1][1]].strip("，；、 ").strip()
     if ci is not None:
         spans = clause_offsets(base)
         i, j = int(ci), int(cj or ci)
