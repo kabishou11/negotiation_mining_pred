@@ -36,6 +36,46 @@ _MAX_MERGE = 180
 _PRIMARY_LIMIT = 160
 _HARD_CAP = 220
 
+_CLAUSE_DELIMS = "，；、"
+
+
+def clause_offsets(text: str) -> list[tuple[int, int]]:
+    """Half-open (start, end) offsets of sub-clauses inside one sentence.
+
+    Deterministic, shared by prompt marking, gold-span mapping and inference
+    resolution — one splitter, three users, no drift.
+    """
+    bounds = [0]
+    for i, ch in enumerate(text):
+        if ch in _CLAUSE_DELIMS:
+            bounds.append(i + 1)
+    spans: list[tuple[int, int]] = []
+    for a, b in zip(bounds, bounds[1:] + [len(text)]):
+        if text[a:b].strip():
+            spans.append((a, b))
+        elif spans:
+            spans[-1] = (spans[-1][0], b)
+    if not spans and text:
+        spans = [(0, len(text))]
+    return spans
+
+
+def mark_clauses(text: str) -> str:
+    """Insert ⟨cN⟩ after each in-sentence delimiter so the model can cite
+    clauses by copying digits instead of counting characters."""
+    parts: list[str] = []
+    n = 1
+    buf: list[str] = []
+    for ch in text:
+        buf.append(ch)
+        if ch in _CLAUSE_DELIMS:
+            parts.append("".join(buf))
+            parts.append(f"⟨c{n + 1}⟩")
+            n += 1
+            buf = []
+    parts.append("".join(buf))
+    return "".join(parts)
+
 
 @dataclass(frozen=True)
 class Sentence:
@@ -46,7 +86,7 @@ class Sentence:
     doc_index: int
 
     def prompt_line(self) -> str:
-        return f"[{self.sid}] {self.text.strip()}"
+        return f"[{self.sid}] {mark_clauses(self.text.strip())}"
 
 
 @dataclass
@@ -215,10 +255,10 @@ def align_chain(sample: dict, segmented: Segmented, chain: list[str]) -> list[st
 
 
 def align_spans(sample: dict, segmented: Segmented, chain: list[str]) -> list[str]:
-    """Gold evidence to span tokens: `S12:18-42` when one sentence holds the
-    span, otherwise whole-sentence ids from `align_chain` (multi-sentence
-    gold spans stay undivided). Offsets index the sentence's stripped text,
-    exactly what the prompt shows and `resolve_span` cuts."""
+    """Gold evidence to clause-range tokens: `S12.c2-c4` citing the minimal
+    clause window covering the span (the model copies ⟨cN⟩ digits it can
+    see, instead of counting characters). Falls back to whole-sentence ids
+    for multi-sentence gold spans."""
     tokens: list[str] = []
     for evidence in chain:
         hit = None
@@ -229,11 +269,22 @@ def align_spans(sample: dict, segmented: Segmented, chain: list[str]) -> list[st
                     hit = (s, base)
         if hit is not None:
             s, base = hit
-            pos = base.find(evidence)
-            tokens.append(f"{s.sid}:{pos}-{pos + len(evidence)}")
+            pos, end = base.find(evidence), base.find(evidence) + len(evidence)
+            spans = clause_offsets(base)
+            ci = cj = None
+            for idx, (a, b) in enumerate(spans, start=1):
+                if a <= pos < b:
+                    ci = idx
+                if a < end <= b:
+                    cj = idx
+            if ci is None:
+                ci = 1
+            if cj is None:
+                cj = len(spans)
+            tokens.append(f"{s.sid}.c{ci}-c{cj}" if cj > ci else f"{s.sid}.c{ci}")
         else:
             for sid in align_chain(sample, segmented, [evidence]):
-                if sid not in [t.split(":")[0] for t in tokens]:
+                if sid not in [t.split(":")[0].split(".")[0] for t in tokens]:
                     tokens.append(sid)
     return tokens
 

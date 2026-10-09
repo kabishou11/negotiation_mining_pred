@@ -17,26 +17,35 @@ _ISSUE = re.compile(
     re.IGNORECASE,
 )
 _FUTURE = re.compile(r"^FUTURE\s*(.*)$")
-_SID = re.compile(r"S\d+(?::\d+-\d+)?")
-_SID_TOKEN = re.compile(r"^(S\d+)(?::(\d+)-(\d+))?$")
+_SID = re.compile(r"S\d+(?:\.c\d+(?:-c\d+)?)?(?::\d+-\d+)?")
+_SID_TOKEN = re.compile(r"^(S\d+)(?:\.c(\d+)(?:-c(\d+))?)?(?::(\d+)-(\d+))?$")
 
 
 def resolve_span(token: str, segmented: Segmented) -> tuple[str, str] | None:
-    """A sentence token, with or without a char range, to (plain sid, text).
+    """A sentence token, with or without clause/char ranges, to (sid, text).
 
-    `S12:18-42` resolves to the 18..42 substring of S12's stripped text;
-    an out-of-range or malformed span falls back to the whole sentence, so
-    a shaky model output can never produce evidence that is not a document
-    substring.
+    `S12.c2-c4` resolves to the exact substring from clause 2's start to
+    clause 4's end (interior delimiters included) via the shared splitter;
+    `S12:18-42` cuts a raw character window; anything malformed falls back
+    to the whole sentence, so a shaky model output can never produce
+    evidence that is not a document substring.
     """
+    from scorer.segment import clause_offsets
+
     m = _SID_TOKEN.match(token.strip())
     if not m:
         return None
-    sid, a, b = m.group(1), m.group(2), m.group(3)
+    sid, ci, cj, a, b = m.groups()
     sent = segmented.by_id.get(sid)
     if sent is None:
         return None
     base = sent.text.strip()
+    if ci is not None:
+        spans = clause_offsets(base)
+        i, j = int(ci), int(cj or ci)
+        if 1 <= i <= j <= len(spans):
+            return sid, base[spans[i - 1][0] : spans[j - 1][1]].strip("，；、 ").strip()
+        return sid, base
     if a is not None and b is not None:
         ai, bi = int(a), int(b)
         if 0 <= ai < bi <= len(base):
