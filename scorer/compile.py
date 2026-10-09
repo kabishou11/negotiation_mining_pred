@@ -17,7 +17,31 @@ _ISSUE = re.compile(
     re.IGNORECASE,
 )
 _FUTURE = re.compile(r"^FUTURE\s*(.*)$")
-_SID = re.compile(r"S\d+")
+_SID = re.compile(r"S\d+(?::\d+-\d+)?")
+_SID_TOKEN = re.compile(r"^(S\d+)(?::(\d+)-(\d+))?$")
+
+
+def resolve_span(token: str, segmented: Segmented) -> tuple[str, str] | None:
+    """A sentence token, with or without a char range, to (plain sid, text).
+
+    `S12:18-42` resolves to the 18..42 substring of S12's stripped text;
+    an out-of-range or malformed span falls back to the whole sentence, so
+    a shaky model output can never produce evidence that is not a document
+    substring.
+    """
+    m = _SID_TOKEN.match(token.strip())
+    if not m:
+        return None
+    sid, a, b = m.group(1), m.group(2), m.group(3)
+    sent = segmented.by_id.get(sid)
+    if sent is None:
+        return None
+    base = sent.text.strip()
+    if a is not None and b is not None:
+        ai, bi = int(a), int(b)
+        if 0 <= ai < bi <= len(base):
+            return sid, base[ai:bi]
+    return sid, base
 _STANCES = {"support", "oppose", "neutral"}
 
 
@@ -292,16 +316,23 @@ def compile_protocol(
                 warnings.append(f"bad stance dropped: {line}")
                 continue
             ids: list[str] = []
-            for sid in _SID.findall(issue_match.group(3)):
-                if sid not in segmented.by_id:
-                    warnings.append(f"unknown sentence id {sid}")
+            chain: list[str] = []
+            tokens_seen: set[str] = set()
+            for token in _SID.findall(issue_match.group(3)):
+                if token in tokens_seen:
                     continue
-                if sid not in ids:
-                    ids.append(sid)
+                got = resolve_span(token, segmented)
+                if got is None:
+                    warnings.append(f"unknown sentence id {token}")
+                    continue
+                tokens_seen.add(token)
+                sid, text = got
+                ids.append(sid)
+                chain.append(text)
             if max_evidence is not None and len(ids) > max_evidence:
                 warnings.append(f"evidence capped at {max_evidence} for {name}")
                 ids = ids[:max_evidence]
-            chain = [segmented.by_id[sid].text for sid in ids]
+                chain = chain[:max_evidence]
             if not name or not chain:
                 warnings.append(f"issue dropped (empty name or evidence): {name}")
                 continue
@@ -331,6 +362,33 @@ def compile_protocol(
         while len(futures) < len(issues):
             futures.append("")
     return Compiled(issue_list=issues, future_argument=futures, warnings=warnings)
+
+
+def gold_protocol_spans(sample: dict, segmented: Segmented) -> str:
+    """Training-target lines with clause-level evidence spans.
+
+    Same as `gold_protocol` but each evidence is `sid:start-end`, so the
+    supervised answer teaches the model to emit gold-shaped clauses instead
+    of whole sentences. Multi-sentence spans fall back to plain ids."""
+    from scorer.segment import align_spans
+
+    lines: list[str] = []
+    futures: list[str] = []
+    gold_futures = list(sample.get("future_argument") or [])
+    for index, issue in enumerate(sample.get("issue_list") or []):
+        tokens = align_spans(sample, segmented, list(issue.get("argument_chain") or []))
+        if not tokens:
+            continue
+        lines.append(
+            "ISSUE {name} ||| {stance} ||| {ids}".format(
+                name=str(issue.get("issue_name") or "").replace("\n", ""),
+                stance=issue.get("stance"),
+                ids=",".join(tokens),
+            )
+        )
+        future = gold_futures[index] if index < len(gold_futures) else ""
+        futures.append("FUTURE " + str(future).replace("\n", ""))
+    return "\n".join(lines + futures)
 
 
 def gold_protocol(sample: dict, segmented: Segmented) -> str:

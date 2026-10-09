@@ -27,7 +27,7 @@ import random
 from collections import Counter
 from pathlib import Path
 
-from scorer.compile import gold_protocol
+from scorer.compile import gold_protocol_spans, resolve_span
 from scorer.datautil import ROOT, load_split
 from scorer.devsplit import FIT_PATH, write_dev_split
 from scorer.prompt import extraction_messages, future_messages
@@ -38,7 +38,7 @@ TRAIN_PATH = OUT_DIR / "train.jsonl"
 STATS_PATH = OUT_DIR / "stats.json"
 CHARS_PER_TOKEN = 1.5
 MAX_EVIDENCE = 3
-EXTRACT_REPEAT = 4
+EXTRACT_REPEAT = 2
 OPPOSE_BOOST = 2
 
 
@@ -78,7 +78,7 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
         if sample["sample_id"] not in fit:
             continue
         segmented = segment_sample(sample)
-        protocol = gold_protocol(sample, segmented)
+        protocol = gold_protocol_spans(sample, segmented)
         issue_lines = [_cap_ids(line) for line in _issue_lines(protocol)]
         for raw, capped in zip(_issue_lines(protocol), issue_lines):
             if raw != capped:
@@ -111,14 +111,16 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
         for index, issue in enumerate(sample.get("issue_list") or []):
             gold_issues += 1
             queue = by_name_queues.get(issue["issue_name"]) or []
-            ids = [sid for sid in (queue.pop(0) if queue else []) if sid in segmented.by_id]
-            if not ids:
+            tokens = [t for t in (queue.pop(0) if queue else [])]
+            resolved = [resolve_span(t, segmented) for t in tokens]
+            resolved = [r for r in resolved if r]
+            if not resolved:
                 dropped_issues += 1
                 continue
             trained = {
                 "issue_name": issue["issue_name"],
                 "stance": issue["stance"],
-                "argument_chain": [segmented.by_id[sid].text for sid in ids],
+                "argument_chain": [text for _sid, text in resolved],
             }
             messages = future_messages(trained)
             target = futures[index] if index < len(futures) else ""

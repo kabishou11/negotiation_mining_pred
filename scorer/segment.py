@@ -214,6 +214,30 @@ def align_chain(sample: dict, segmented: Segmented, chain: list[str]) -> list[st
     return ids
 
 
+def align_spans(sample: dict, segmented: Segmented, chain: list[str]) -> list[str]:
+    """Gold evidence to span tokens: `S12:18-42` when one sentence holds the
+    span, otherwise whole-sentence ids from `align_chain` (multi-sentence
+    gold spans stay undivided). Offsets index the sentence's stripped text,
+    exactly what the prompt shows and `resolve_span` cuts."""
+    tokens: list[str] = []
+    for evidence in chain:
+        hit = None
+        for s in segmented.sentences:
+            base = s.text.strip()
+            if evidence and evidence in base:
+                if hit is None or len(base) < len(hit[1]):
+                    hit = (s, base)
+        if hit is not None:
+            s, base = hit
+            pos = base.find(evidence)
+            tokens.append(f"{s.sid}:{pos}-{pos + len(evidence)}")
+        else:
+            for sid in align_chain(sample, segmented, [evidence]):
+                if sid not in [t.split(":")[0] for t in tokens]:
+                    tokens.append(sid)
+    return tokens
+
+
 def containment_stats(samples: list[dict]) -> dict[str, float]:
     """Fraction of gold evidences covered by 1 sentence, or by 1–2 consecutive."""
     one = two = total = 0
