@@ -65,9 +65,41 @@ def _percentile(values: list[int], q: float) -> int:
     return ordered[min(len(ordered) - 1, int((len(ordered) - 1) * q))]
 
 
-def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[dict], dict]:
+def _winner_protocol(winner: dict, sample: dict, segmented) -> str:
+    """Winner issue_list (JSON level) back to ISSUE protocol lines with
+    clause tokens; futures ride along as FUTURE lines from the winner file."""
+    from scorer.segment import align_spans
+
+    lines, futures = [], []
+    wf = winner.get("future_argument") or []
+    for idx, iss in enumerate(winner.get("issue_list") or []):
+        tokens = align_spans(sample, segmented, list(iss.get("argument_chain") or []))
+        if not tokens:
+            continue
+        lines.append(
+            "ISSUE {n} ||| {s} ||| {t}".format(
+                n=str(iss.get("issue_name") or "").replace("\n", ""),
+                s=iss.get("stance"),
+                t=",".join(tokens),
+            )
+        )
+        f = wf[idx] if idx < len(wf) else ""
+        futures.append("FUTURE " + str(f).replace("\n", ""))
+    return "\n".join(lines + futures)
+
+
+def build_records(train: list[dict] | None = None, seed: int = 0,
+                  winners_path: str = "") -> tuple[list[dict], dict]:
     train = train if train is not None else load_split("train")
     fit = _fit_ids(train)
+    winners: dict[str, dict] = {}
+    if winners_path:
+        from pathlib import Path as _P
+
+        for line in _P(winners_path).read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                w = json.loads(line)
+                winners[w["sample_id"]] = w
     records: list[dict] = []
     dropped_issues = 0
     gold_issues = 0
@@ -78,7 +110,14 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
         if sample["sample_id"] not in fit:
             continue
         segmented = segment_sample(sample)
-        protocol = gold_protocol_spans(sample, segmented)
+        winner = winners.get(sample["sample_id"])
+        if winner is not None and winner.get("issue_list"):
+            protocol = _winner_protocol(winner, sample, segmented)
+            # winner rows keep the gold futures for the future task below
+            sample = dict(sample)
+            sample["future_argument"] = winner.get("future_argument") or sample.get("future_argument")
+        else:
+            protocol = gold_protocol_spans(sample, segmented)
         issue_lines = [_cap_ids(line) for line in _issue_lines(protocol)]
         for raw, capped in zip(_issue_lines(protocol), issue_lines):
             if raw != capped:
@@ -185,8 +224,8 @@ def build_records(train: list[dict] | None = None, seed: int = 0) -> tuple[list[
     return records, stats
 
 
-def write_sft() -> dict:
-    records, stats = build_records()
+def write_sft(winners_path: str = "") -> dict:
+    records, stats = build_records(winners_path=winners_path)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     with TRAIN_PATH.open("w", encoding="utf-8", newline="\n") as handle:
         for row in records:
@@ -197,7 +236,9 @@ def write_sft() -> dict:
 
 
 def main() -> None:
-    stats = write_sft()
+    import os
+
+    stats = write_sft(winners_path=os.environ.get("RAFT_WINNERS", ""))
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 

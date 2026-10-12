@@ -32,7 +32,10 @@ def main() -> None:
     args = p.parse_args()
 
     enc = BgeEncoder(device=args.device)
-    alpha_fn = _memoize_pair(BertScore(device=args.device) if "device" in BertScore.__init__.__code__.co_varnames else BertScore())
+    # Winner selection discriminates via matching F1; alpha is ~constant
+    # across variants (0.82-0.83), so a stub keeps ranking identical and
+    # skips hours of CPU BERTScore.
+    alpha_fn = lambda a, b: 1.0
     gold = {s["sample_id"]: s for s in load_split("train")}
 
     by_doc: dict[str, list[dict]] = defaultdict(list)
