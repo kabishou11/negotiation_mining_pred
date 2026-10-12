@@ -112,16 +112,16 @@ def build_records(train: list[dict] | None = None, seed: int = 0,
         segmented = segment_sample(sample)
         winner = winners.get(sample["sample_id"])
         if winner is not None and winner.get("issue_list"):
-            protocol = _winner_protocol(winner, sample, segmented)
-            # winner rows keep the gold futures for the future task below
-            sample = dict(sample)
-            sample["future_argument"] = winner.get("future_argument") or sample.get("future_argument")
+            winner_protocol = _winner_protocol(winner, sample, segmented)
         else:
-            protocol = gold_protocol_spans(sample, segmented)
-        issue_lines = [_cap_ids(line) for line in _issue_lines(protocol)]
-        for raw, capped in zip(_issue_lines(protocol), issue_lines):
-            if raw != capped:
-                capped_lines += 1
+            winner_protocol = ""
+        protocol = gold_protocol_spans(sample, segmented)
+        # The extract record teaches the winner's (judge-selected) issues;
+        # the future task keeps the gold protocol lines so name-queue
+        # alignment and gold futures stay paired by construction.
+        extract_source = winner_protocol if _issue_lines(winner_protocol) else protocol
+        issue_lines = [_cap_ids(line) for line in _issue_lines(extract_source)]
+        gold_lines = [_cap_ids(line) for line in _issue_lines(protocol)]
         has_oppose = any(issue.get("stance") == "oppose" for issue in sample.get("issue_list") or [])
         if has_oppose:
             oppose_docs += 1
@@ -143,7 +143,7 @@ def build_records(train: list[dict] | None = None, seed: int = 0,
         # attach every copy's future to the last copy's sentences. Protocol
         # lines are emitted in issue order, so popping the front stays aligned.
         by_name_queues: dict[str, list[list[str]]] = {}
-        for line in issue_lines:
+        for line in gold_lines:
             name = line.split(" ||| ", 2)[0][len("ISSUE ") :]
             by_name_queues.setdefault(name, []).append(line.split(" ||| ")[-1].split(","))
         futures = list(sample.get("future_argument") or [])
